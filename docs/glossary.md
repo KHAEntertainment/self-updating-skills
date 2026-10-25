@@ -23,4 +23,5 @@ _Avoid_: pin version, current version
 **Owner runner**: the single runner (`ci` or `local`) allowed to update a skill.
 
 ## Verdicts
-`FRESH`, `STALE`, `CONTENT-LAG`, `TAMPERED`; `DRIFT` is reported per item and makes the overall verdict `STALE`.
+Current (`bin/upkeep.sh`): `FRESH`, `STALE`, `TAMPERED`, and `UNKNOWN` (no pins, dates, or frozen blocks configured).
+Added by the Skill Engine: `CONTENT-LAG`; `DRIFT` is reported per item and makes the overall verdict `STALE`.

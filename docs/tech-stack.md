@@ -1,7 +1,7 @@
 # Tech Stack
 
 ## Today (v0.1.x)
-- `bin/upkeep.sh`: bash with embedded Python 3 (standard library only). Copied into each skill as `skills/*/scripts/upkeep.sh` by `upkeep sync`.
+- `bin/upkeep.sh`: bash with embedded Python 3 (standard library only). Copied into each skill as `skills/*/scripts/upkeep.sh` by `bin/upkeep.sh sync skills/*`.
 - Distribution: npm package `@kha-entertainment/self-updating-skills` (`bin` entries `self-updating-skills`, `skill-upkeep`), plus plain skill folders.
 
 ## Skill Engine (from Phase 1)
