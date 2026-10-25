@@ -29,7 +29,7 @@
 
 - **Last updated**: 2026-10-25
 - **Current iteration goal**: Skill Engine — replace the scheduled Markdown-editing agent with a deterministic Go updater, agent update as fallback. Tracking issue: #1. Five rollout phases, one Issue each.
-- **Open PRs**: none
+- **Open PRs**: #2 docs bootstrap (adds this file)
 - **Known tech debt**: see the bottom of `docs/feature-log.md`
 
 ---
