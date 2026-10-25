@@ -1,4 +1,4 @@
-# Self-Updating Skills (`KHAEntertainment/self-updating-skills`)
+[![Self-updating-skills](https://ascii.rest/banner/Self-updating-skills.svg?color=d6692e,486af4&font=bold&shadow=heavy&fill=block&size=l)](https://ascii.rest/banner/)
 
 [![skills.sh](https://skills.sh/b/KHAEntertainment/self-updating-skills)](https://skills.sh/KHAEntertainment/self-updating-skills)
 
