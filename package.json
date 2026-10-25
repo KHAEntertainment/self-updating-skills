@@ -1,0 +1,28 @@
+{
+  "name": "@kha-entertainment/self-updating-skills",
+  "version": "0.1.0",
+  "description": "Self-updating Agent Skills framework and harness authoring suite (self-updating-skills, claude-code-authoring, codex-authoring, opencode-authoring) with single-file upkeep.sh runtime.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KHAEntertainment/self-updating-skills.git"
+  },
+  "bin": {
+    "self-updating-skills": "bin/upkeep.sh",
+    "skill-upkeep": "bin/upkeep.sh"
+  },
+  "files": [
+    "bin/",
+    "skills/",
+    ".claude-plugin/"
+  ],
+  "keywords": [
+    "agent-skills",
+    "self-updating-skills",
+    "skills",
+    "claude-code",
+    "codex",
+    "opencode",
+    "upkeep"
+  ]
+}

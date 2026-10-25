@@ -1,0 +1,11 @@
+{
+  "name": "self-updating-skills",
+  "version": "0.1.0",
+  "description": "Self-updating Agent Skills framework and harness authoring suite (self-updating-skills, claude-code-authoring, codex-authoring, opencode-authoring) powered by a single-file upkeep.sh runtime for version pin checks, reference freshness, live doc fetching, and SHA-256 frozen owner-policy blocks.",
+  "author": {
+    "name": "KHA Entertainment"
+  },
+  "repository": "https://github.com/KHAEntertainment/self-updating-skills",
+  "license": "MIT",
+  "skills": "./skills/"
+}

@@ -1,0 +1,14 @@
+{
+  "skill_name": "claude-code-authoring",
+  "evals": [
+    {"id": 0, "name": "git-push-confirm-hook",
+     "prompt": "I want Claude Code to stop and ask me to confirm before it ever runs `git push` in this repo, but not block other git commands. Write the hook: the .claude/settings.json snippet and the script. Keep it tight.",
+     "expected_output": "PreToolUse hook on Bash narrowed with if: Bash(git push *), script returning hookSpecificOutput.permissionDecision \"ask\" (not deny / exit 2).", "files": []},
+    {"id": 1, "name": "release-notes-skill",
+     "prompt": "make me a personal claude code slash command /release-notes that takes a version (like 2.4.0), reads git log since the previous tag, and writes RELEASE_NOTES.md. I only ever want it to run when I type it, never automatically, and it should do its work in a separate subagent so it doesn't clutter my main context. Just write the file(s).",
+     "expected_output": "~/.claude/skills/release-notes/SKILL.md (not commands/), frontmatter disable-model-invocation: true, context: fork, argument handling via $ARGUMENTS/$0/arguments, argument-hint; no version: field.", "files": []},
+    {"id": 2, "name": "plugin-subagent-mcp",
+     "prompt": "In my plugin `acme-tools` I'm adding agents/db-auditor.md. It needs its own postgres MCP server (npx @acme/pg-mcp) and should run with permissionMode acceptEdits so it can write reports without prompting. Write the agent file and whatever else is needed.",
+     "expected_output": "Flags that plugin subagents ignore mcpServers and permissionMode; puts the MCP server in the plugin's .mcp.json (with ${CLAUDE_PLUGIN_ROOT} if paths), and addresses the permission need another way.", "files": []}
+  ]
+}
