@@ -61,7 +61,10 @@ version_at_least() {
 
 # Go-binary hand-off (v0.3.0+): when an `upkeep` binary is installed and
 # reports >= 0.3.0, `check` runs on the Go path. `UPKEEP_NO_DELEGATE=1`
-# forces the script path.
+# forces the script path. Arguments are normalised here first: `check`
+# defaults when a path or flag is passed directly, `--debug` was already
+# stripped above, and DEFAULT_SKILL_DIR is appended when no positional dir
+# was given — mirroring the Python check argument parse.
 if [[ "$SUBCMD_EARLY" == "check" && -z "${UPKEEP_NO_DELEGATE:-}" ]]; then
   GO_BIN=""
   if command -v upkeep >/dev/null 2>&1; then
@@ -72,10 +75,27 @@ if [[ "$SUBCMD_EARLY" == "check" && -z "${UPKEEP_NO_DELEGATE:-}" ]]; then
   if [[ -n "$GO_BIN" ]]; then
     GO_VER="$("$GO_BIN" --version 2>/dev/null | head -n 1)"
     if [[ "$GO_VER" == upkeep\ * ]] && version_at_least "${GO_VER#upkeep }" "0.3.0"; then
+      GO_ARGS=()
+      FOUND_DIR=false
+      if [[ "$FIRST" == "check" ]]; then
+        REST=("${@:2}")
+      else
+        REST=("$@")
+      fi
+      for arg in "${REST[@]}"; do
+        case "$arg" in
+          --strict|--json) GO_ARGS+=("$arg") ;;
+          --threshold) GO_ARGS+=("$arg") ;;
+          *) GO_ARGS+=("$arg"); FOUND_DIR=true ;;
+        esac
+      done
+      if [[ "$FOUND_DIR" == false ]]; then
+        GO_ARGS+=("$DEFAULT_SKILL_DIR")
+      fi
       if [[ "$DEBUG_MODE" -eq 1 ]]; then
         echo "UPKEEP-DEBUG: go path: $GO_BIN ($GO_VER)" >&2
       fi
-      exec "$GO_BIN" "$@"
+      exec "$GO_BIN" check "${GO_ARGS[@]}"
     fi
   fi
 fi
