@@ -57,9 +57,6 @@ func Check(ctx context.Context, dir string) (*CheckReport, error) {
 // CheckWithThreshold runs a check with an explicit freshness-threshold
 // override (in days); nil uses the skill's frontmatter threshold.
 func CheckWithThreshold(ctx context.Context, dir string, threshold *int) (*CheckReport, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("check: %w", err)
-	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, &Error{Op: "stat", Path: dir, Err: err}
@@ -69,6 +66,9 @@ func CheckWithThreshold(ctx context.Context, dir string, threshold *int) (*Check
 	// the "UNKNOWN — no SKILL.md under ..." line is byte-identical.
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = resolved
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, &Error{Op: "check", Path: abs, Err: err}
 	}
 	sk := filepath.Join(abs, "SKILL.md")
 	if _, err := os.Stat(sk); err != nil {
@@ -92,7 +92,7 @@ func CheckWithThreshold(ctx context.Context, dir string, threshold *int) (*Check
 	// Cancellation past the point of a completed computation still wins over
 	// a report.
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("check: %w", err)
+		return nil, &Error{Op: "check", Path: abs, Err: err}
 	}
 	return &CheckReport{Verdict: r.Verdict, Summary: r.Summary, Items: items(r.Items)}, nil
 }

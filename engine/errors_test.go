@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/KHAEntertainment/self-updating-skills/engine"
 )
@@ -49,8 +50,9 @@ func TestCheckReadErrorUnreadableReference(t *testing.T) {
 	}
 }
 
-// TestCheckCancelledContext verifies that a cancelled ctx yields ctx.Err()
-// (wrapped) instead of a report.
+// TestCheckCancelledContext verifies that a cancelled ctx yields a structured
+// engine.Error (Op "check") wrapping ctx.Err(), so errors.As and errors.Is
+// both hold.
 func TestCheckCancelledContext(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "SKILL.md"), "---\nname: t\n---\n# body\n")
@@ -66,6 +68,43 @@ func TestCheckCancelledContext(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled (errors.Is)", err)
+	}
+	var ee *engine.Error
+	if !errors.As(err, &ee) {
+		t.Fatalf("err is not an engine.Error: %T %v", err, err)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ee.Op != "check" {
+		t.Errorf("Op = %q, want check", ee.Op)
+	}
+	if ee.Path != resolved {
+		t.Errorf("Path = %q, want %q", ee.Path, resolved)
+	}
+}
+
+// TestCheckDeadlineExceeded verifies the deadline branch of the same path.
+func TestCheckDeadlineExceeded(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "SKILL.md"), "---\nname: t\n---\n# body\n")
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	report, err := engine.Check(ctx, dir)
+	if err == nil {
+		t.Fatalf("expected error for expired deadline, got report %+v", report)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded (errors.Is)", err)
+	}
+	var ee *engine.Error
+	if !errors.As(err, &ee) {
+		t.Fatalf("err is not an engine.Error: %T %v", err, err)
+	}
+	if ee.Op != "check" {
+		t.Errorf("Op = %q, want check", ee.Op)
 	}
 }
 

@@ -10,9 +10,11 @@ import (
 
 // TestUpkeepWrapperGoHandoffArgs checks that the Go hand-off receives
 // normalised arguments: an explicit `check` subcommand, DEFAULT_SKILL_DIR
-// appended when no positional dir was given, and flags preserved. A STUB
-// `upkeep` executable stands in for the real binary (the real binary is
-// never built inside a test).
+// appended when no positional dir was given, flag values consumed (--threshold
+// N and --threshold=N), and exit 0. A STUB `upkeep` executable stands in for
+// the real binary (the real binary is never built inside a test). The script
+// is run explicitly under /bin/bash (macOS bash 3.2, where an empty
+// "${arr[@]}" under set -u crashes) and under PATH `bash`, when available.
 func TestUpkeepWrapperGoHandoffArgs(t *testing.T) {
 	root := repoRoot(t)
 
@@ -37,6 +39,20 @@ fi
 	copyFile(t, filepath.Join(root, "bin", "upkeep.sh"), filepath.Join(skillDir, "scripts", "upkeep.sh"))
 
 	cwd := t.TempDir() // unrelated cwd
+	dirWithSpace := filepath.Join(t.TempDir(), "skill dir with space")
+
+	shells := []struct {
+		name string
+		path string
+	}{
+		{"bash-path", "bash"},
+	}
+	if _, err := os.Stat("/bin/bash"); err == nil {
+		shells = append(shells, struct {
+			name string
+			path string
+		}{"bin-bash-3.2", "/bin/bash"})
+	}
 
 	cases := []struct {
 		name string
@@ -44,29 +60,41 @@ fi
 		want string
 	}{
 		{"no-args", nil, "check " + skillDir},
+		{"check", []string{"check"}, "check " + skillDir},
+		{"check-debug", []string{"check", "--debug"}, "check " + skillDir},
 		{"strict-flag", []string{"--strict"}, "check --strict " + skillDir},
+		{"check-strict", []string{"check", "--strict"}, "check --strict " + skillDir},
+		{"check-threshold", []string{"check", "--threshold", "7"}, "check --threshold 7 " + skillDir},
+		{"threshold-shorthand", []string{"--threshold", "7"}, "check --threshold 7 " + skillDir},
+		{"check-threshold-strict", []string{"check", "--threshold", "7", "--strict"}, "check --threshold 7 --strict " + skillDir},
+		{"threshold-equals", []string{"check", "--threshold=7"}, "check --threshold=7 " + skillDir},
 		{"dir", []string{skillDir}, "check " + skillDir},
-		{"check-strict-no-dir", []string{"check", "--strict"}, "check --strict " + skillDir},
 		{"check-dir", []string{"check", skillDir}, "check " + skillDir},
 		{"check-threshold-dir", []string{"check", "--threshold", "7", skillDir}, "check --threshold 7 " + skillDir},
+		{"check-threshold-dir-with-space", []string{"check", "--threshold", "7", dirWithSpace}, "check --threshold 7 " + dirWithSpace},
 	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(filepath.Join(skillDir, "scripts", "upkeep.sh"), tc.args...)
-			cmd.Dir = cwd
-			cmd.Env = append(os.Environ(),
-				"HOME="+home,
-				"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-			)
-			out, err := cmd.Output()
-			if err != nil {
-				t.Fatalf("run: %v\n%s", err, out)
-			}
-			if got := strings.TrimSpace(string(out)); got != tc.want {
-				t.Errorf("stub argv = %q, want %q", got, tc.want)
-			}
-		})
+
+	for _, sh := range shells {
+		sh := sh
+		for _, tc := range cases {
+			tc := tc
+			t.Run(sh.name+"/"+tc.name, func(t *testing.T) {
+				cmd := exec.Command(sh.path, filepath.Join(skillDir, "scripts", "upkeep.sh"))
+				cmd.Args = append(cmd.Args, tc.args...)
+				cmd.Dir = cwd
+				cmd.Env = append(os.Environ(),
+					"HOME="+home,
+					"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				)
+				out, err := cmd.Output()
+				if err != nil {
+					t.Fatalf("run: %v", err)
+				}
+				if got := strings.TrimSpace(string(out)); got != tc.want {
+					t.Errorf("stub argv = %q, want %q", got, tc.want)
+				}
+			})
+		}
 	}
 }
 
@@ -91,7 +119,7 @@ fi
 	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: x\nmetadata:\n  upkeep-source-base: \"https://example.com\"\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: x\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	copyFile(t, filepath.Join(root, "bin", "upkeep.sh"), filepath.Join(skillDir, "scripts", "upkeep.sh"))

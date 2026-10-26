@@ -75,18 +75,38 @@ if [[ "$SUBCMD_EARLY" == "check" && -z "${UPKEEP_NO_DELEGATE:-}" ]]; then
   if [[ -n "$GO_BIN" ]]; then
     GO_VER="$("$GO_BIN" --version 2>/dev/null | head -n 1)"
     if [[ "$GO_VER" == upkeep\ * ]] && version_at_least "${GO_VER#upkeep }" "0.3.0"; then
+      # Build the normalised Go argv. Bash 3.2 (macOS /bin/bash) treats an
+      # empty "${arr[@]}" under set -u as an unbound-variable error, so
+      # iterate "$@" (safe when empty) and only ever expand GO_ARGS once
+      # it is guaranteed non-empty.
+      args=("$@")
+      n=${#args[@]}
+      i=0
+      skip_first=false
+      [[ "$FIRST" == "check" ]] && skip_first=true
       GO_ARGS=()
       FOUND_DIR=false
-      if [[ "$FIRST" == "check" ]]; then
-        REST=("${@:2}")
-      else
-        REST=("$@")
-      fi
-      for arg in "${REST[@]}"; do
+      while (( i < n )); do
+        if [[ "$skip_first" == true ]]; then
+          skip_first=false
+          ((i++))
+          continue
+        fi
+        arg="${args[$i]}"
         case "$arg" in
-          --strict|--json) GO_ARGS+=("$arg") ;;
-          --threshold) GO_ARGS+=("$arg") ;;
-          *) GO_ARGS+=("$arg"); FOUND_DIR=true ;;
+          --strict|--json)
+            GO_ARGS+=("$arg"); ((i++)) ;;
+          --threshold)
+            if (( i+1 < n )); then
+              GO_ARGS+=("--threshold" "${args[$((i+1))]}")
+              ((i+=2))
+            else
+              GO_ARGS+=("--threshold"); ((i++))
+            fi ;;
+          --threshold=*)
+            GO_ARGS+=("$arg"); ((i++)) ;;
+          *)
+            GO_ARGS+=("$arg"); FOUND_DIR=true; ((i++)) ;;
         esac
       done
       if [[ "$FOUND_DIR" == false ]]; then
