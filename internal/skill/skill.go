@@ -513,6 +513,16 @@ func ScanFrozenBlocks(skillDir string) ([]FrozenBlock, error) {
 	order := []string{}
 	blocks := map[string]*FrozenBlock{}
 	for _, f := range files {
+		// Python's scans skip references whose path does not exist
+		// (f.exists() follows symlinks), so dangling symlinks are skipped;
+		// files that exist but cannot be read still return a structured
+		// error.
+		if _, err := os.Stat(f); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, &ReadError{Path: f, Err: err}
+		}
 		raw, err := os.ReadFile(f)
 		if err != nil {
 			return nil, &ReadError{Path: f, Err: err}
@@ -543,6 +553,13 @@ func ScanFrozenBlocks(skillDir string) ([]FrozenBlock, error) {
 				}
 			}
 			if closeAt < 0 {
+				i++
+				continue
+			}
+			// Python's frozen regex needs at least one line between the open
+			// and close markers (\n(.*?)\n); adjacent markers are not a
+			// block.
+			if closeAt <= i+1 {
 				i++
 				continue
 			}

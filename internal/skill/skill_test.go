@@ -165,6 +165,65 @@ func TestScanFrozenBlocksDuplicateAcrossFiles(t *testing.T) {
 	}
 }
 
+func TestScanFrozenBlocksAdjacentMarkers(t *testing.T) {
+	dir := t.TempDir()
+	sk := "---\nname: t\n---\n\n" +
+		"<!-- frozen:x -->\n" +
+		"<!-- /frozen:x -->\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ScanFrozenBlocks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 0 {
+		t.Errorf("adjacent markers should not form a block, got %+v", blocks)
+	}
+}
+
+func TestScanFrozenBlocksBlankLineSeparator(t *testing.T) {
+	dir := t.TempDir()
+	sk := "---\nname: t\n---\n\n" +
+		"<!-- frozen:x -->\n" +
+		"\n" +
+		"<!-- /frozen:x -->\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ScanFrozenBlocks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Errorf("blank-line separator should form a block, got %+v", blocks)
+	}
+}
+
+func TestScanFrozenBlocksDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	sk := "---\nname: t\n---\n\n" +
+		"<!-- frozen:x -->\n" +
+		"body\n" +
+		"<!-- /frozen:x -->\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "missing-target.md"), filepath.Join(dir, "references", "dangling.md")); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ScanFrozenBlocks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Errorf("dangling symlink should be skipped, got %+v", blocks)
+	}
+}
+
 func TestScanFrozenBlocksNestedMarker(t *testing.T) {
 	dir := t.TempDir()
 	sk := "---\nname: t\n---\n\n" +

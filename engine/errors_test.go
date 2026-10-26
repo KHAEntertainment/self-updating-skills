@@ -108,6 +108,30 @@ func TestCheckDeadlineExceeded(t *testing.T) {
 	}
 }
 
+// TestCheckDanglingReferenceSymlink verifies a dangling references symlink is
+// skipped (Python's not f.exists()) and the check returns a normal report.
+func TestCheckDanglingReferenceSymlink(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "SKILL.md"), "---\nname: t\n---\n# t\n")
+	refDir := filepath.Join(dir, "references")
+	if err := os.MkdirAll(refDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "nonexistent-target.md"), filepath.Join(refDir, "dangling.md")); err != nil {
+		t.Fatal(err)
+	}
+	report, err := engine.Check(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("unexpected error for dangling symlink: %v", err)
+	}
+	if report == nil {
+		t.Fatal("nil report")
+	}
+	if report.MissingSkill {
+		t.Error("unexpected MissingSkill report")
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

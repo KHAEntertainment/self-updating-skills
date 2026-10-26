@@ -77,7 +77,14 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 			}
 			continue
 		}
-		switch c := source.VerCmp(pin.Version, cur); {
+		// Python compares ver_cmp(ver or "0", cur): an empty pinned version
+		// compares as "0" for the verdict, but the displayed value stays the
+		// empty string exactly as Python prints it.
+		cmpVer := pin.Version
+		if cmpVer == "" {
+			cmpVer = "0"
+		}
+		switch c := source.VerCmp(cmpVer, cur); {
 		case c == 0:
 			items = append(items, Item{Kind: "FRESH", Line: fmt.Sprintf("FRESH    pin:%s  %s", pin.Name, cur)})
 		case c < 0:
@@ -122,7 +129,7 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 	for _, b := range blocks {
 		rec, ok := recordedMap[b.ID]
 		switch {
-		case !ok:
+		case !ok || rec == "":
 			tampered++
 			items = append(items, Item{Kind: "UNSTAMPED", Line: fmt.Sprintf("UNSTAMPED frozen:%s (%s)  current %s (run: upkeep.sh stamp)", b.ID, b.Rel, b.Digest)})
 		case rec != b.Digest:
@@ -207,6 +214,15 @@ func scanDates(skillDir string, cfg skill.Config) ([]DateItem, error) {
 	var out []DateItem
 	seen := map[string]bool{}
 	for _, f := range files {
+		// Python skips references that do not exist (f.exists() follows
+		// symlinks), so dangling symlinks are skipped; files that exist but
+		// cannot be read still surface as a structured error.
+		if _, err := os.Stat(f); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, &skill.ReadError{Path: f, Err: err}
+		}
 		raw, err := os.ReadFile(f)
 		if err != nil {
 			return nil, &skill.ReadError{Path: f, Err: err}

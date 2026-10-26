@@ -5,15 +5,33 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/KHAEntertainment/self-updating-skills/engine"
 	"github.com/spf13/cobra"
 )
 
+// decimalInt parses integer flag values in base 10, mirroring Python's
+// int() (pflag's IntVar parses base 0, so "010" would become 8 and "08"
+// would be rejected).
+type decimalInt int
+
+func (d *decimalInt) Set(s string) error {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid argument %q for \"--threshold\" flag: %v", s, err)
+	}
+	*d = decimalInt(n)
+	return nil
+}
+
+func (d *decimalInt) String() string { return strconv.Itoa(int(*d)) }
+func (d *decimalInt) Type() string   { return "int" }
+
 var (
 	checkStrict    bool
 	checkJSON      bool
-	checkThreshold int
+	checkThreshold decimalInt
 )
 
 var checkCmd = &cobra.Command{
@@ -31,11 +49,12 @@ var checkCmd = &cobra.Command{
 		}
 		var threshold *int
 		if cmd.Flags().Changed("threshold") {
-			threshold = &checkThreshold
+			v := int(checkThreshold)
+			threshold = &v
 		}
 		report, err := engine.CheckWithThreshold(cmd.Context(), abs, threshold)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
 		}
 		if checkJSON {
@@ -43,9 +62,9 @@ var checkCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			fmt.Println(string(b))
+			fmt.Fprintln(cmd.OutOrStdout(), string(b))
 		} else {
-			fmt.Print(engine.RenderText(report))
+			fmt.Fprint(cmd.OutOrStdout(), engine.RenderText(report))
 		}
 		if checkStrict && (report.MissingSkill || report.Verdict == "STALE" || report.Verdict == "TAMPERED") {
 			os.Exit(1)
@@ -57,5 +76,5 @@ var checkCmd = &cobra.Command{
 func init() {
 	checkCmd.Flags().BoolVar(&checkStrict, "strict", false, "exit 1 when the verdict is STALE or TAMPERED")
 	checkCmd.Flags().BoolVar(&checkJSON, "json", false, "print the CheckReport struct as JSON")
-	checkCmd.Flags().IntVar(&checkThreshold, "threshold", 0, "override the freshness threshold in days")
+	checkCmd.Flags().Var(&checkThreshold, "threshold", "override the freshness threshold in days")
 }
