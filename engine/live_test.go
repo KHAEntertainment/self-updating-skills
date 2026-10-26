@@ -36,8 +36,8 @@ func TestLiveRepoSkills(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
-			gl := goLines(t, ctx, sd)
-			sl, sc := shLines(t, root, sd)
+			gl, _ := goLines(t, ctx, sd)
+			sl, sc := shLines(t, root, sd, false)
 			fmt.Printf("\n=== %s (script exit %d) ===\n", name, sc)
 			fmt.Printf("GO:\n%s\nSCRIPT:\n%s\n", strings.Join(gl, "\n"), strings.Join(sl, "\n"))
 			if !equalLines(gl, sl) {

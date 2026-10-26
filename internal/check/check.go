@@ -41,7 +41,7 @@ type DateItem struct {
 
 // Compute runs the full check logic for a skill directory. threshold
 // overrides the frontmatter freshness threshold when non-nil.
-func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir string) Report {
+func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir string) (Report, error) {
 	thr := cfg.ThresholdDays
 	if threshold != nil {
 		thr = *threshold
@@ -88,7 +88,10 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		}
 	}
 
-	dateItems := scanDates(skillDir, cfg)
+	dateItems, err := scanDates(skillDir, cfg)
+	if err != nil {
+		return Report{}, err
+	}
 	staleDates := 0
 	for _, di := range dateItems {
 		dt, err := time.ParseInLocation("2006-01-02", di.Date, time.Local)
@@ -105,7 +108,10 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		}
 	}
 
-	blocks, _ := skill.ScanFrozenBlocks(skillDir)
+	blocks, err := skill.ScanFrozenBlocks(skillDir)
+	if err != nil {
+		return Report{}, err
+	}
 	recorded := cfg.Frozen
 	recordedMap := cfg.FrozenMap()
 	blockIDs := make(map[string]bool, len(blocks))
@@ -166,7 +172,7 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 	case len(parts) == 0:
 		verdict = "UNKNOWN"
 	}
-	return Report{Verdict: verdict, Summary: summary, Items: items}
+	return Report{Verdict: verdict, Summary: summary, Items: items}, nil
 }
 
 var shaRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
@@ -184,8 +190,9 @@ func dayNumber(t time.Time) int {
 
 // scanDates finds Verified dates in SKILL.md and references/*.md, mirroring
 // the script's date scan exactly (substring "erified", 2-line window,
-// dedupe by (label, date), then the metadata.verified fallback).
-func scanDates(skillDir string, cfg skill.Config) []DateItem {
+// dedupe by (label, date), then the metadata.verified fallback). A failed
+// read of an existing file is returned as an error.
+func scanDates(skillDir string, cfg skill.Config) ([]DateItem, error) {
 	sk := filepath.Join(skillDir, "SKILL.md")
 	files := []string{sk}
 	if entries, err := os.ReadDir(filepath.Join(skillDir, "references")); err == nil && len(entries) > 0 {
@@ -202,9 +209,9 @@ func scanDates(skillDir string, cfg skill.Config) []DateItem {
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
 		if err != nil {
-			continue
+			return nil, &skill.ReadError{Path: f, Err: err}
 		}
-		text := string(raw)
+		text := skill.NormalizeNewlines(string(raw))
 		label := "SKILL.md"
 		if f == sk {
 			text = skill.StripFrontmatter(text)
@@ -235,5 +242,5 @@ func scanDates(skillDir string, cfg skill.Config) []DateItem {
 	if len(out) == 0 && cfg.Verified != "" {
 		out = append(out, DateItem{Label: "SKILL.md(metadata.verified)", Date: cfg.Verified})
 	}
-	return out
+	return out, nil
 }

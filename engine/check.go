@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,22 @@ import (
 	"github.com/KHAEntertainment/self-updating-skills/internal/check"
 	"github.com/KHAEntertainment/self-updating-skills/internal/skill"
 )
+
+// Error is a structured engine error: the failing operation, the path it
+// happened on, and the underlying error. It supports errors.Is/errors.As
+// through Unwrap.
+type Error struct {
+	Op   string
+	Path string
+	Err  error
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("%s %s: %v", e.Op, e.Path, e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *Error) Unwrap() error { return e.Err }
 
 // Item is one verdict item line.
 type Item struct {
@@ -40,9 +57,12 @@ func Check(ctx context.Context, dir string) (*CheckReport, error) {
 // CheckWithThreshold runs a check with an explicit freshness-threshold
 // override (in days); nil uses the skill's frontmatter threshold.
 func CheckWithThreshold(ctx context.Context, dir string, threshold *int) (*CheckReport, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("check: %w", err)
+	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return nil, err
+		return nil, &Error{Op: "stat", Path: dir, Err: err}
 	}
 	// The script resolves its skill path (pathlib.Path.resolve), which
 	// follows symlinks (e.g. /var -> /private/var on macOS); mirror that so
@@ -52,13 +72,28 @@ func CheckWithThreshold(ctx context.Context, dir string, threshold *int) (*Check
 	}
 	sk := filepath.Join(abs, "SKILL.md")
 	if _, err := os.Stat(sk); err != nil {
-		return &CheckReport{
-			MissingSkill: true,
-			Items:        []Item{{Kind: "UNKNOWN", Line: fmt.Sprintf("UNKNOWN — no SKILL.md under %s", abs)}},
-		}, nil
+		if os.IsNotExist(err) {
+			return &CheckReport{
+				MissingSkill: true,
+				Items:        []Item{{Kind: "UNKNOWN", Line: fmt.Sprintf("UNKNOWN — no SKILL.md under %s", abs)}},
+			}, nil
+		}
+		return nil, &Error{Op: "stat", Path: sk, Err: err}
 	}
 	cfg := skill.ParseFrontmatter(sk)
-	r := check.Compute(ctx, cfg, threshold, abs)
+	r, err := check.Compute(ctx, cfg, threshold, abs)
+	if err != nil {
+		var re *skill.ReadError
+		if errors.As(err, &re) {
+			return nil, &Error{Op: "read", Path: re.Path, Err: re.Err}
+		}
+		return nil, &Error{Op: "read", Path: abs, Err: err}
+	}
+	// Cancellation past the point of a completed computation still wins over
+	// a report.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("check: %w", err)
+	}
 	return &CheckReport{Verdict: r.Verdict, Summary: r.Summary, Items: items(r.Items)}, nil
 }
 

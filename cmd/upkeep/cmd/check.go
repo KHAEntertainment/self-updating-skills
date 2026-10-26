@@ -35,7 +35,8 @@ var checkCmd = &cobra.Command{
 		}
 		report, err := engine.CheckWithThreshold(cmd.Context(), abs, threshold)
 		if err != nil {
-			return err
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
 		if checkJSON {
 			b, err := json.MarshalIndent(report, "", "  ")
