@@ -544,8 +544,12 @@ func ScanFrozenBlocks(skillDir string) ([]FrozenBlock, error) {
 				continue
 			}
 			fid := om[1]
+			// Python's regex \n(.*?)\n never accepts the immediately following
+			// line as the closer; it lazily continues to the next eligible
+			// closer. So start the closer search at i+2: an adjacent closer is
+			// never accepted, and a later one still forms the block.
 			closeAt := -1
-			for j := i + 1; j < len(lines); j++ {
+			for j := i + 2; j < len(lines); j++ {
 				cm := frozenCloseRe.FindStringSubmatch(lines[j])
 				if cm != nil && cm[1] == fid {
 					closeAt = j
@@ -553,13 +557,7 @@ func ScanFrozenBlocks(skillDir string) ([]FrozenBlock, error) {
 				}
 			}
 			if closeAt < 0 {
-				i++
-				continue
-			}
-			// Python's frozen regex needs at least one line between the open
-			// and close markers (\n(.*?)\n); adjacent markers are not a
-			// block.
-			if closeAt <= i+1 {
+				// No eligible closer (only adjacent or none): not a block.
 				i++
 				continue
 			}

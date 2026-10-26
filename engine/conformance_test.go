@@ -180,6 +180,8 @@ func conformanceCases() []conformanceCase {
 		{"empty-pin", "empty-pin", "STALE", true, "STALE    pin:fresh-pkg"},
 		{"frozen-adjacent-recorded", "frozen-adjacent-recorded", "TAMPERED", true, "MISSING  frozen:x"},
 		{"frozen-adjacent-unrecorded", "frozen-adjacent-unrecorded", "UNKNOWN", false, ""},
+		{"frozen-adjacent-then-block", "frozen-adjacent-then-block", "TAMPERED", true, "UNSTAMPED frozen:x"},
+		{"frozen-adjacent-then-block-recorded", "frozen-adjacent-then-block-recorded", "FRESH", false, "INTACT   frozen:x"},
 		{"frozen-empty-hash", "frozen-empty-hash", "TAMPERED", true, "UNSTAMPED frozen:pol"},
 	}
 }

@@ -165,6 +165,29 @@ func TestScanFrozenBlocksDuplicateAcrossFiles(t *testing.T) {
 	}
 }
 
+func TestScanFrozenBlocksAdjacentThenLaterCloser(t *testing.T) {
+	dir := t.TempDir()
+	sk := "---\nname: t\n---\n\n" +
+		"<!-- frozen:x -->\n" +
+		"<!-- /frozen:x -->\n" +
+		"body\n" +
+		"<!-- /frozen:x -->\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ScanFrozenBlocks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("got %d blocks, want 1 (later closer forms the block): %+v", len(blocks), blocks)
+	}
+	wantBody := "<!-- /frozen:x -->\nbody"
+	if blocks[0].Body != wantBody {
+		t.Errorf("Body = %q, want %q (adjacent closer becomes part of the body)", blocks[0].Body, wantBody)
+	}
+}
+
 func TestScanFrozenBlocksAdjacentMarkers(t *testing.T) {
 	dir := t.TempDir()
 	sk := "---\nname: t\n---\n\n" +
