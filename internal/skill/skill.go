@@ -7,6 +7,7 @@ package skill
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -76,6 +77,26 @@ func defaultSources(name string) Sources {
 	return Sources{Ext: ".md", Cache: name + "-docs", TTLMinutes: 720}
 }
 
+// ReadError reports a failed read of an existing file.
+type ReadError struct {
+	Path string
+	Err  error
+}
+
+func (e *ReadError) Error() string { return fmt.Sprintf("read %s: %v", e.Path, e.Err) }
+
+// Unwrap returns the underlying error.
+func (e *ReadError) Unwrap() error { return e.Err }
+
+// NormalizeNewlines converts CRLF and lone CR line endings to LF, mirroring
+// Python's universal-newline read_text. Views used for parsing (frontmatter,
+// frozen markers, dates) go through this; the original file bytes are left
+// untouched for later splicing.
+func NormalizeNewlines(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
+}
+
 var (
 	fmRe        = regexp.MustCompile(`(?s)^---\n(.*?)\n---`)
 	nameRe      = regexp.MustCompile(`(?m)^name:\s*(.+)$`)
@@ -112,6 +133,7 @@ func ParseFrontmatter(skPath string) Config {
 	if err != nil {
 		return cfg
 	}
+	txt = []byte(NormalizeNewlines(string(txt)))
 	m := fmRe.FindSubmatch(txt)
 	if m == nil {
 		return cfg
@@ -154,6 +176,7 @@ func ParseFrontmatter(skPath string) Config {
 			continue
 		}
 		k, v := mm[1], mm[2]
+		v = strings.TrimSpace(v)
 		if !strings.HasPrefix(v, `"`) && !strings.HasPrefix(v, `'`) {
 			v = inlineCommentRe.ReplaceAllString(v, "")
 		}
@@ -348,6 +371,7 @@ func srcScalar(flat map[string]string, flatKey, srcStr, nestedKey, def string) s
 			continue
 		}
 		v := mm[2]
+		v = strings.TrimSpace(v)
 		if strings.HasPrefix(v, "[") || strings.HasPrefix(v, "{") {
 			return def
 		}
@@ -427,8 +451,9 @@ func isFourSpaceSibling(ln string) bool {
 }
 
 // StripFencedBlocks masks fenced code blocks (``` or ~~~ runs) by replacing
-// each contained line with an empty line, preserving line count so byte
-// offsets stay aligned with the original text.
+// every non-newline byte inside the fence — fence delimiter lines included —
+// with a space. The result is byte-for-byte the same length as the input, so
+// offsets of content after a fence are preserved.
 func StripFencedBlocks(text string) string {
 	lines := strings.Split(text, "\n")
 	out := make([]string, len(lines))
@@ -441,18 +466,18 @@ func StripFencedBlocks(text string) string {
 			if !inFence {
 				inFence = true
 				fenceMarker = strings.Repeat(string(marker[0]), len(marker))
-				out[i] = ""
+				out[i] = strings.Repeat(" ", len(line))
 				continue
 			}
 			if strings.HasPrefix(s, fenceMarker) {
 				inFence = false
 				fenceMarker = ""
-				out[i] = ""
+				out[i] = strings.Repeat(" ", len(line))
 				continue
 			}
 		}
 		if inFence {
-			out[i] = ""
+			out[i] = strings.Repeat(" ", len(line))
 		} else {
 			out[i] = line
 		}
@@ -470,7 +495,9 @@ type FrozenBlock struct {
 
 // ScanFrozenBlocks scans a skill directory (SKILL.md plus references/*.md)
 // for frozen blocks, computing their hashes. Frontmatter and fenced code
-// blocks are ignored, exactly like the script.
+// blocks are ignored, exactly like the script. Blocks are keyed by ID with
+// Python dict semantics: the last value wins and the first insertion
+// position is kept, across all files.
 func ScanFrozenBlocks(skillDir string) ([]FrozenBlock, error) {
 	sk := filepath.Join(skillDir, "SKILL.md")
 	files := []string{sk}
@@ -483,13 +510,14 @@ func ScanFrozenBlocks(skillDir string) ([]FrozenBlock, error) {
 		sort.Strings(files[1:])
 	}
 
-	var blocks []FrozenBlock
+	order := []string{}
+	blocks := map[string]*FrozenBlock{}
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
 		if err != nil {
-			continue
+			return nil, &ReadError{Path: f, Err: err}
 		}
-		text := string(raw)
+		text := NormalizeNewlines(string(raw))
 		rel := "SKILL.md"
 		if f == sk {
 			text = StripFrontmatter(text)
@@ -498,9 +526,11 @@ func ScanFrozenBlocks(skillDir string) ([]FrozenBlock, error) {
 		}
 		cleaned := StripFencedBlocks(text)
 		lines := strings.Split(cleaned, "\n")
-		for i, ln := range lines {
-			om := frozenOpenRe.FindStringSubmatch(ln)
+		i := 0
+		for i < len(lines) {
+			om := frozenOpenRe.FindStringSubmatch(lines[i])
 			if om == nil {
+				i++
 				continue
 			}
 			fid := om[1]
@@ -513,6 +543,7 @@ func ScanFrozenBlocks(skillDir string) ([]FrozenBlock, error) {
 				}
 			}
 			if closeAt < 0 {
+				i++
 				continue
 			}
 			body := strings.Join(lines[i+1:closeAt], "\n")
@@ -524,11 +555,19 @@ func ScanFrozenBlocks(skillDir string) ([]FrozenBlock, error) {
 			body = strings.Join(bodyLines, "\n")
 			sum := sha256.Sum256([]byte(body))
 			digest := "sha256:" + hex.EncodeToString(sum[:])[:16]
-			blocks = append(blocks, FrozenBlock{ID: fid, Rel: rel, Body: body, Digest: digest})
-			i = closeAt
+			if _, ok := blocks[fid]; !ok {
+				order = append(order, fid)
+			}
+			// last value wins; first insertion position is kept
+			blocks[fid] = &FrozenBlock{ID: fid, Rel: rel, Body: body, Digest: digest}
+			i = closeAt + 1
 		}
 	}
-	return blocks, nil
+	out := make([]FrozenBlock, 0, len(order))
+	for _, fid := range order {
+		out = append(out, *blocks[fid])
+	}
+	return out, nil
 }
 
 // StripFrontmatter removes a leading YAML frontmatter block, mirroring the

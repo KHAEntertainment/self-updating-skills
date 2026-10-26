@@ -11,9 +11,37 @@ import (
 
 func TestStripFencedBlocks(t *testing.T) {
 	in := "line1\n```go\nfenced\n```\nline2\n~~~\nfenced2\n~~~\nline3"
-	want := "line1\n\n\n\nline2\n\n\n\nline3"
+	want := "line1\n     \n      \n   \nline2\n   \n       \n   \nline3"
 	if got := StripFencedBlocks(in); got != want {
 		t.Errorf("StripFencedBlocks:\ngot  %q\nwant %q", got, want)
+	}
+}
+
+func TestStripFencedBlocksByteLength(t *testing.T) {
+	inputs := []string{
+		"a\n```\nx\ny\n```\nb",
+		"# 日本語\n```markdown\né… text\n```\nafter\n",
+		"~~~\nfenced\n~~~\n",
+	}
+	for _, in := range inputs {
+		out := StripFencedBlocks(in)
+		if len(out) != len(in) {
+			t.Errorf("masked length %d != original length %d for %q", len(out), len(in), in)
+		}
+	}
+}
+
+func TestStripFencedBlocksOffsetAfterNonASCIIFence(t *testing.T) {
+	in := "```markdown\né日本語\n```\n<!-- frozen:x -->\n"
+	out := StripFencedBlocks(in)
+	marker := "<!-- frozen:x -->"
+	wantIdx := strings.Index(in, marker)
+	gotIdx := strings.Index(out, marker)
+	if wantIdx < 0 {
+		t.Fatalf("marker not found in original")
+	}
+	if gotIdx != wantIdx {
+		t.Errorf("marker offset = %d, want %d (original offset)", gotIdx, wantIdx)
 	}
 }
 
@@ -80,6 +108,103 @@ func TestScanFrozenBlocksMissingClose(t *testing.T) {
 	}
 	if len(blocks) != 0 {
 		t.Errorf("unclosed block should be ignored, got %+v", blocks)
+	}
+}
+
+func TestScanFrozenBlocksDuplicateSameFile(t *testing.T) {
+	dir := t.TempDir()
+	sk := "---\nname: t\n---\n\n" +
+		"<!-- frozen:x -->\n" +
+		"first body\n" +
+		"<!-- /frozen:x -->\n\n" +
+		"<!-- frozen:x -->\n" +
+		"second body\n" +
+		"<!-- /frozen:x -->\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ScanFrozenBlocks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("got %d blocks, want 1 (last value wins): %+v", len(blocks), blocks)
+	}
+	if blocks[0].Body != "second body" {
+		t.Errorf("block body = %q, want %q (last value wins)", blocks[0].Body, "second body")
+	}
+}
+
+func TestScanFrozenBlocksDuplicateAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	sk := "---\nname: t\n---\n\n" +
+		"<!-- frozen:y -->\n" +
+		"skill body\n" +
+		"<!-- /frozen:y -->\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "references", "a.md"), []byte("<!-- frozen:y -->\nreference body\n<!-- /frozen:y -->\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ScanFrozenBlocks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("got %d blocks, want 1: %+v", len(blocks), blocks)
+	}
+	if blocks[0].Rel != "references/a.md" {
+		t.Errorf("Rel = %q, want references/a.md (last value wins)", blocks[0].Rel)
+	}
+	if blocks[0].Body != "reference body" {
+		t.Errorf("Body = %q, want reference body", blocks[0].Body)
+	}
+}
+
+func TestScanFrozenBlocksNestedMarker(t *testing.T) {
+	dir := t.TempDir()
+	sk := "---\nname: t\n---\n\n" +
+		"<!-- frozen:a -->\n" +
+		"outer body\n" +
+		"<!-- frozen:b -->\n" +
+		"inner body\n" +
+		"<!-- /frozen:b -->\n" +
+		"still outer\n" +
+		"<!-- /frozen:a -->\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ScanFrozenBlocks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("got %d blocks, want 1 (inner marker consumed by outer block)", len(blocks))
+	}
+	for _, want := range []string{"outer body", "<!-- frozen:b -->", "inner body", "still outer"} {
+		if !strings.Contains(blocks[0].Body, want) {
+			t.Errorf("outer block body missing %q: %q", want, blocks[0].Body)
+		}
+	}
+}
+
+func TestNormalizeNewlines(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"a\r\nb\r\n", "a\nb\n"},
+		{"a\rb\n", "a\nb\n"},
+		{"a\n", "a\n"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := NormalizeNewlines(c.in); got != c.want {
+			t.Errorf("NormalizeNewlines(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
