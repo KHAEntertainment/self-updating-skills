@@ -108,6 +108,10 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 	blocks, _ := skill.ScanFrozenBlocks(skillDir)
 	recorded := cfg.Frozen
 	recordedMap := cfg.FrozenMap()
+	blockIDs := make(map[string]bool, len(blocks))
+	for _, b := range blocks {
+		blockIDs[b.ID] = true
+	}
 	tampered := 0
 	for _, b := range blocks {
 		rec, ok := recordedMap[b.ID]
@@ -123,7 +127,7 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		}
 	}
 	for _, fe := range recorded {
-		if _, ok := recordedMap[fe.ID]; !ok {
+		if !blockIDs[fe.ID] {
 			tampered++
 			items = append(items, Item{Kind: "MISSING", Line: fmt.Sprintf("MISSING  frozen:%s  expected %s — frozen block deleted!", fe.ID, fe.Hash)})
 		}

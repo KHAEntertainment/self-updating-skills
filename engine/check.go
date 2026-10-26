@@ -40,15 +40,25 @@ func Check(ctx context.Context, dir string) (*CheckReport, error) {
 // CheckWithThreshold runs a check with an explicit freshness-threshold
 // override (in days); nil uses the skill's frontmatter threshold.
 func CheckWithThreshold(ctx context.Context, dir string, threshold *int) (*CheckReport, error) {
-	sk := filepath.Join(dir, "SKILL.md")
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	// The script resolves its skill path (pathlib.Path.resolve), which
+	// follows symlinks (e.g. /var -> /private/var on macOS); mirror that so
+	// the "UNKNOWN — no SKILL.md under ..." line is byte-identical.
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	sk := filepath.Join(abs, "SKILL.md")
 	if _, err := os.Stat(sk); err != nil {
 		return &CheckReport{
 			MissingSkill: true,
-			Items:        []Item{{Kind: "UNKNOWN", Line: fmt.Sprintf("UNKNOWN — no SKILL.md under %s", dir)}},
+			Items:        []Item{{Kind: "UNKNOWN", Line: fmt.Sprintf("UNKNOWN — no SKILL.md under %s", abs)}},
 		}, nil
 	}
 	cfg := skill.ParseFrontmatter(sk)
-	r := check.Compute(ctx, cfg, threshold, dir)
+	r := check.Compute(ctx, cfg, threshold, abs)
 	return &CheckReport{Verdict: r.Verdict, Summary: r.Summary, Items: items(r.Items)}, nil
 }
 
