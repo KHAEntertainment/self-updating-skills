@@ -229,12 +229,12 @@ func TestConformanceFixtures(t *testing.T) {
 			if tc.countLine != "" {
 				n := 0
 				for _, l := range gl {
-					if l == tc.countLine {
+					if strings.Contains(l, tc.countLine) {
 						n++
 					}
 				}
 				if n != 1 {
-					t.Errorf("line %q appears %d times, want exactly 1", tc.countLine, n)
+					t.Errorf("line containing %q appears %d times, want exactly 1", tc.countLine, n)
 				}
 			}
 		})
