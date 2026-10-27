@@ -66,7 +66,7 @@ var checkCmd = &cobra.Command{
 		} else {
 			fmt.Fprint(cmd.OutOrStdout(), engine.RenderText(report))
 		}
-		if checkStrict && (report.MissingSkill || report.Verdict == "STALE" || report.Verdict == "TAMPERED") {
+		if checkStrict && (report.MissingSkill || report.Verdict == "STALE" || report.Verdict == "TAMPERED" || report.Verdict == "CONTENT-LAG") {
 			os.Exit(1)
 		}
 		return nil
