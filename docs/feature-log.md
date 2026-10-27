@@ -8,4 +8,4 @@
 
 ## Known Tech Debt
 - Required status check on `main` not yet configured; needed before Skill Engine Phase 5 auto-merge (recorded: 2026-10-25)
-- Fallback parity limit (recorded-ahead): when the sidecar's `latest_seen` is ahead of a rolled-back or unpublished registry, Go reports CONTENT-LAG while `upkeep.sh` reports FRESH — deliberate, for never-FRESH safety (recorded: 2026-10-27)
+- Fallback parity limits (two documented Go-only classes; the script never reads sidecars): `DRIFT` items make Go report STALE where `upkeep.sh` reports FRESH, and when the sidecar's `latest_seen` is ahead of a rolled-back or unpublished registry Go reports CONTENT-LAG where the script reports FRESH — both deliberate, for never-FRESH safety (recorded: 2026-10-27)

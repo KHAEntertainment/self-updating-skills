@@ -65,3 +65,12 @@ metadata:
   upkeep-source-pages: "overview, configuration, cli-reference"
 ---
 ```
+
+## 5. Renderer-Owned Keys, the Sidecar and Generated Regions
+
+Once a skill has an `upkeep.data.json` sidecar (next to `SKILL.md`, tracked in git, `schema: 1`), two metadata keys stop being author-editable:
+
+- **`upkeep-pins`** becomes the *content-verified-for* pin list, rendered from the sidecar's `pins.<pkg>.verified_for` values (decision P1). The newest upstream version is tracked separately as `latest_seen` in the sidecar, so the frozen script shows `STALE` exactly where the Go engine shows `CONTENT-LAG`.
+- **`upkeep-verified`** is rendered from the newest `verified_at` across the sidecar's `pins` and `docs`.
+
+`upkeep render <skill-dir>` (the Go engine binary) rewrites both keys and the three generated regions from the sidecar — `<!-- generated:pins -->` (the package · verified for · latest seen · checked table), `<!-- generated:freshness -->` (`Verified <date> for <pkg>@<ver>` lines) and `<!-- generated:redirects -->` (the stale-habit → current table). Hand edits inside a generated region or to an owned key are overwritten on the next render and reported as `DRIFT` items by `upkeep check` (each item makes the overall verdict `STALE`). A malformed sidecar (unknown keys, a schema other than 1) makes `render` and `stamp` refuse to run. Keep every other metadata key author-owned single-line YAML: multi-line block scalars for owned keys are normalized to flat lines by the next render.
