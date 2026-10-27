@@ -141,6 +141,14 @@ func scanMarkerRegions(raw []byte, openRe, closeRe *regexp.Regexp, what string, 
 		if seen[id] && strict {
 			return nil, fmt.Errorf("duplicate %s region %q", what, id)
 		}
+		// An adjacent closer (open line directly followed by the close
+		// line) never matches the lazy \n(.*?)\n pattern, the same rule as
+		// the frozen regex; it is an authoring error, not a region.
+		if strict && i+1 < len(lines) {
+			if cm := closeRe.FindStringSubmatch(lines[i+1].text); cm != nil && cm[1] == id {
+				return nil, fmt.Errorf("%s region %q has no body line between the markers (a blank line is required for an empty region)", what, id)
+			}
+		}
 		// The closer search starts at i+2, mirroring the frozen regex's
 		// lazy \n(.*?)\n: an adjacent closer line is body, never a closer.
 		closeAt := -1
@@ -222,6 +230,7 @@ type fline struct {
 	text     string // line text without \r and \n
 	cr       bool   // the line originally ended with \r\n
 	inserted bool   // created by SetFlatKeys (uses eol, not a remembered \r)
+	deleted  bool   // removed by SetFlatKeys (empty desired value)
 }
 
 // SetFlatKeys rewrites the frontmatter of raw so that each key in keys has
@@ -308,7 +317,8 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 		return nil, err
 	}
 
-	// Replace existing key lines in place.
+	// Replace existing key lines in place; a key whose desired value is
+	// empty is deleted rather than written.
 	set := map[string]string{}
 	for _, k := range keys {
 		set[k.Key] = k.Value
@@ -316,16 +326,31 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 	replaced := map[string]bool{}
 	for i := metaIdx + 1; i < metaEnd; i++ {
 		if m := flatMetaKeyRe.FindStringSubmatch(flines[i].text); m != nil {
-			if _, wanted := set[m[1]]; wanted {
-				flines[i].text = fmt.Sprintf("  %s: %q", m[1], set[m[1]])
+			if v, wanted := set[m[1]]; wanted {
+				if v == "" {
+					flines[i].deleted = true
+				} else {
+					flines[i].text = fmt.Sprintf("  %s: %q", m[1], v)
+				}
 				replaced[m[1]] = true
 			}
 		}
 	}
+	// Drop deleted lines.
+	if kept := flines[:0]; true {
+		for _, fl := range flines {
+			if !fl.deleted {
+				kept = append(kept, fl)
+			}
+		}
+		flines = kept
+		closing = len(flines) - 1
+	}
 	// Insert missing keys at the end of the metadata block, in order.
+	// (Empty values were deletions, never insertions.)
 	var insert []fline
 	for _, k := range keys {
-		if replaced[k.Key] {
+		if k.Value == "" || replaced[k.Key] {
 			continue
 		}
 		fl := fline{text: fmt.Sprintf("  %s: %q", k.Key, k.Value), inserted: true}
