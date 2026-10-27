@@ -1,0 +1,4 @@
+---
+name: unconfigured
+---
+# Nothing configured

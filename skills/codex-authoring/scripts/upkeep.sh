@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# skill-upkeep-lib: v0.2.0
+# skill-upkeep-lib: v0.3.0
 # Unified self-updating skill runtime:
-#   upkeep.sh check [--strict] [--threshold N] [skill-dir]
+#   upkeep.sh check [--strict] [--threshold N] [--debug] [skill-dir]
 #   upkeep.sh fetch [--skill-dir <dir>] <page>... | --index | --list
 #   upkeep.sh stamp [skill-dir]
 #   upkeep.sh sync <skill-dir>...
@@ -15,11 +15,119 @@ set -uo pipefail
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 DEFAULT_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Debug mode: `--debug` is recognized and stripped before forwarding so it
+# never reaches the Go or Python argument parsers; `UPKEEP_DEBUG=1` is
+# honored too. Exactly one debug line goes to stderr, naming the path taken.
+DEBUG_MODE=0
+ARGS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--debug" ]]; then
+    DEBUG_MODE=1
+  else
+    ARGS+=("$arg")
+  fi
+done
+if [[ "$DEBUG_MODE" -eq 0 && -n "${UPKEEP_DEBUG:-}" ]]; then
+  DEBUG_MODE=1
+fi
+if [[ ${#ARGS[@]} -gt 0 ]]; then
+  set -- "${ARGS[@]}"
+else
+  set --
+fi
+
+# Peek at the subcommand before delegating so the Go hand-off only applies
+# to `check` (the only subcommand the binary implements this phase).
+FIRST="${1:-}"
+case "$FIRST" in
+  check|fetch|stamp|sync) SUBCMD_EARLY="$FIRST" ;;
+  *) SUBCMD_EARLY="check" ;;
+esac
+
+# version_at_least compares dotted numeric versions in pure bash (no GNU
+# sort -V; macOS ships BSD tools).
+version_at_least() {
+  local candidate="$1" minimum="$2" i
+  local -a ca mi
+  IFS='.' read -r -a ca <<< "${candidate//[^0-9.]/}"
+  IFS='.' read -r -a mi <<< "${minimum//[^0-9.]/}"
+  for ((i=0; i<${#mi[@]}; i++)); do
+    local cv="${ca[$i]:-0}" mv="${mi[$i]:-0}"
+    if (( cv > mv )); then return 0; fi
+    if (( cv < mv )); then return 1; fi
+  done
+  return 0
+}
+
+# Go-binary hand-off (v0.3.0+): when an `upkeep` binary is installed and
+# reports >= 0.3.0, `check` runs on the Go path. `UPKEEP_NO_DELEGATE=1`
+# forces the script path. Arguments are normalised here first: `check`
+# defaults when a path or flag is passed directly, `--debug` was already
+# stripped above, and DEFAULT_SKILL_DIR is appended when no positional dir
+# was given — mirroring the Python check argument parse.
+if [[ "$SUBCMD_EARLY" == "check" && -z "${UPKEEP_NO_DELEGATE:-}" ]]; then
+  GO_BIN=""
+  if command -v upkeep >/dev/null 2>&1; then
+    GO_BIN="$(command -v upkeep)"
+  elif [[ -x "$HOME/.agents/upkeep/bin/upkeep" ]]; then
+    GO_BIN="$HOME/.agents/upkeep/bin/upkeep"
+  fi
+  if [[ -n "$GO_BIN" ]]; then
+    GO_VER="$("$GO_BIN" --version 2>/dev/null | head -n 1)"
+    if [[ "$GO_VER" == upkeep\ * ]] && version_at_least "${GO_VER#upkeep }" "0.3.0"; then
+      # Build the normalised Go argv. Bash 3.2 (macOS /bin/bash) treats an
+      # empty "${arr[@]}" under set -u as an unbound-variable error, so
+      # iterate "$@" (safe when empty) and only ever expand GO_ARGS once
+      # it is guaranteed non-empty.
+      args=("$@")
+      n=${#args[@]}
+      i=0
+      skip_first=false
+      [[ "$FIRST" == "check" ]] && skip_first=true
+      GO_ARGS=()
+      FOUND_DIR=false
+      while (( i < n )); do
+        if [[ "$skip_first" == true ]]; then
+          skip_first=false
+          ((i++))
+          continue
+        fi
+        arg="${args[$i]}"
+        case "$arg" in
+          --strict|--json)
+            GO_ARGS+=("$arg"); ((i++)) ;;
+          --threshold)
+            if (( i+1 < n )); then
+              GO_ARGS+=("--threshold" "${args[$((i+1))]}")
+              ((i+=2))
+            else
+              GO_ARGS+=("--threshold"); ((i++))
+            fi ;;
+          --threshold=*)
+            GO_ARGS+=("$arg"); ((i++)) ;;
+          *)
+            GO_ARGS+=("$arg"); FOUND_DIR=true; ((i++)) ;;
+        esac
+      done
+      if [[ "$FOUND_DIR" == false ]]; then
+        GO_ARGS+=("$DEFAULT_SKILL_DIR")
+      fi
+      if [[ "$DEBUG_MODE" -eq 1 ]]; then
+        echo "UPKEEP-DEBUG: go path: $GO_BIN ($GO_VER)" >&2
+      fi
+      exec "$GO_BIN" check "${GO_ARGS[@]}"
+    fi
+  fi
+fi
+
 # Optional delegation: if a newer canonical ~/.agents/upkeep/bin/upkeep.sh exists, use it
 if [[ -z "${UPKEEP_NO_DELEGATE:-}" && -x "$HOME/.agents/upkeep/bin/upkeep.sh" && "$SELF_PATH" != "$HOME/.agents/upkeep/bin/upkeep.sh" ]]; then
   self_ver="$(grep -m1 '^# skill-upkeep-lib:' "$SELF_PATH" 2>/dev/null | awk '{print $3}')"
   global_ver="$(grep -m1 '^# skill-upkeep-lib:' "$HOME/.agents/upkeep/bin/upkeep.sh" 2>/dev/null | awk '{print $3}')"
   if [[ -n "$global_ver" && "$global_ver" != "$self_ver" ]]; then
+    if [[ "$DEBUG_MODE" -eq 1 ]]; then
+      echo "UPKEEP-DEBUG: script path (delegate): $HOME/.agents/upkeep/bin/upkeep.sh ($global_ver)" >&2
+    fi
     UPKEEP_NO_DELEGATE=1 exec "$HOME/.agents/upkeep/bin/upkeep.sh" "$@"
   fi
 fi
@@ -47,6 +155,10 @@ if [[ "$SUBCMD" == "sync" ]]; then
     echo "SYNCED   $target/scripts/upkeep.sh ($ver)"
   done
   exit 0
+fi
+
+if [[ "$DEBUG_MODE" -eq 1 ]]; then
+  echo "UPKEEP-DEBUG: script path: $SELF_PATH (skill-upkeep-lib v0.3.0)" >&2
 fi
 
 exec python3 - "$SUBCMD" "$DEFAULT_SKILL_DIR" "$@" <<'PY'
