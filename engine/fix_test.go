@@ -208,15 +208,18 @@ func TestMalformedSidecarRefusesMutations(t *testing.T) {
 				t.Error("stamp must fail on a malformed sidecar")
 			}
 			// L-4: check never blanks the gate line — the malformed sidecar
-			// is a DRIFT item with the overall STALE verdict.
+			// is a DRIFT item. This fixture carries an unstamped frozen
+			// block, so with F1's full computation TAMPERED correctly wins
+			// the verdict; the stamped STALE control lives in
+			// TestCheckMalformedSidecarKeepsTampered.
 			r, err := engine.Check(ctx, dir)
 			if err != nil {
 				t.Fatalf("check must report, not error: %v", err)
 			}
-			if r.Verdict != "STALE" {
-				t.Errorf("verdict = %q, want STALE", r.Verdict)
+			if r.Verdict != "TAMPERED" {
+				t.Errorf("verdict = %q, want TAMPERED (unstamped frozen block)", r.Verdict)
 			}
-			if !strings.Contains(engine.RenderText(r), "VERDICT: STALE") || !strings.Contains(engine.RenderText(r), "upkeep.data.json") {
+			if !strings.Contains(engine.RenderText(r), "VERDICT: TAMPERED") || !strings.Contains(engine.RenderText(r), "upkeep.data.json") {
 				t.Errorf("check output must print a VERDICT line naming the sidecar: %q", engine.RenderText(r))
 			}
 			got, _ := os.ReadFile(skPath)
