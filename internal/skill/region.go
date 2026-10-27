@@ -141,28 +141,39 @@ func scanMarkerRegions(raw []byte, openRe, closeRe *regexp.Regexp, what string, 
 		if seen[id] && strict {
 			return nil, fmt.Errorf("duplicate %s region %q", what, id)
 		}
-		// An adjacent closer (open line directly followed by the close
-		// line) never matches the lazy \n(.*?)\n pattern, the same rule as
-		// the frozen regex; it is an authoring error, not a region.
-		if strict && i+1 < len(lines) {
-			if cm := closeRe.FindStringSubmatch(lines[i+1].text); cm != nil && cm[1] == id {
-				return nil, fmt.Errorf("%s region %q has no body line between the markers (a blank line is required for an empty region)", what, id)
-			}
-		}
-		// The closer search starts at i+2, mirroring the frozen regex's
-		// lazy \n(.*?)\n: an adjacent closer line is body, never a closer.
+		// The closer search inspects every body line from i+1, mirroring
+		// the frozen regex's lazy \n(.*?)\n shape (an adjacent same-id closer
+		// is not a closer) while validating the body: a nested opener or a
+		// foreign/stray closing marker inside the region is an error in
+		// strict mode — the renderer must never silently erase content.
 		closeAt := -1
-		for j := i + 2; j < len(lines); j++ {
-			if openRe.MatchString(lines[j].text) {
+		for j := i + 1; j < len(lines); j++ {
+			if om2 := openRe.FindStringSubmatch(lines[j].text); om2 != nil {
 				if strict {
-					return nil, fmt.Errorf("nested %s marker inside region %q", what, id)
+					return nil, fmt.Errorf("nested %s marker %q inside region %q", what, om2[1], id)
 				}
 				continue
 			}
-			if cm := closeRe.FindStringSubmatch(lines[j].text); cm != nil && cm[1] == id {
-				closeAt = j
-				break
+			cm := closeRe.FindStringSubmatch(lines[j].text)
+			if cm == nil {
+				continue
 			}
+			if cm[1] != id {
+				if strict {
+					return nil, fmt.Errorf("stray closing %s marker %q inside region %q", what, cm[1], id)
+				}
+				continue
+			}
+			if j == i+1 {
+				// Adjacent same-id closer: never matches the lazy pattern.
+				if strict {
+					return nil, fmt.Errorf("%s region %q has no body line between the markers (a blank line is required for an empty region)", what, id)
+				}
+				// Lenient: skip this closer and keep searching.
+				continue
+			}
+			closeAt = j
+			break
 		}
 		if closeAt < 0 {
 			if strict {
@@ -236,8 +247,12 @@ type fline struct {
 // SetFlatKeys rewrites the frontmatter of raw so that each key in keys has
 // exactly one flat metadata line with the given (quoted) value. Existing
 // lines are replaced in place; missing keys are inserted at the end of the
-// metadata block. Per-line endings (including CRLF) are preserved; newly
-// inserted lines use eol. It returns the new raw bytes.
+// metadata block; a key whose desired value is empty is deleted. When the
+// frontmatter has no metadata: object, one is created before the closing
+// --- (a file with no frontmatter at all is an error). The purge spec only
+// ever removes lines inside the metadata block. Per-line endings
+// (including CRLF) are preserved; newly inserted lines use eol. It returns
+// the new raw bytes.
 func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]byte, error) {
 	fmEnd, ok := FrontmatterEnd(raw)
 	if !ok {
@@ -257,8 +272,12 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 	// The last frontmatter line is the closing ---.
 	closing := len(flines) - 1
 
-	metaBounds := func() (int, int, error) {
-		metaIdx := -1
+	// metaBounds locates the metadata block: the metadata: line and the
+	// first following line that starts a top-level key (non-whitespace
+	// first character), mirroring ParseFrontmatter's boundary. Blank lines
+	// stay inside. metaIdx < 0 means the block is absent.
+	metaBounds := func() (metaIdx, metaEnd int) {
+		metaIdx = -1
 		for i, fl := range flines {
 			if metadataLineRe.MatchString(fl.text) {
 				metaIdx = i
@@ -266,44 +285,72 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 			}
 		}
 		if metaIdx < 0 {
-			return 0, 0, fmt.Errorf("frontmatter has no metadata: block")
+			return -1, -1
 		}
-		// The metadata block runs until the first line that starts a
-		// top-level key (non-whitespace first character), mirroring
-		// ParseFrontmatter's boundary. Blank lines stay inside.
-		metaEnd := closing
+		metaEnd = closing
 		for j := metaIdx + 1; j < closing; j++ {
 			if txt := flines[j].text; txt != "" && !isSpaceByte(txt[0]) {
 				metaEnd = j
 				break
 			}
 		}
-		return metaIdx, metaEnd, nil
+		return metaIdx, metaEnd
+	}
+
+	insertedLine := func(text string) fline {
+		fl := fline{text: text, inserted: true}
+		if eol == "\r\n" {
+			fl.cr = true
+		}
+		return fl
+	}
+
+	metaIdx, _ := metaBounds()
+	if metaIdx < 0 {
+		// No metadata object: create one right before the closing ---,
+		// carrying the keys (like the shell stamp does).
+		var out []fline
+		out = append(out, flines[:closing]...)
+		out = append(out, insertedLine("metadata:"))
+		for _, k := range keys {
+			if k.Value == "" {
+				continue
+			}
+			out = append(out, insertedLine(fmt.Sprintf("  %s: %q", k.Key, k.Value)))
+		}
+		out = append(out, flines[closing:]...)
+		flines = out
+		return rebuildFrontmatter(flines, trailingNL, raw, fmEnd), nil
 	}
 
 	// Purge: drop lines named by the spec, including whole nested blocks.
+	// Bounded to the metadata block: author keys in other frontmatter
+	// objects survive untouched.
 	if purge != nil {
+		_, metaEnd := metaBounds()
 		purgeBlocks := map[string]bool{}
 		for _, n := range purge.NestedBlocks {
 			purgeBlocks[n] = true
 		}
 		kept := flines[:0]
 		inPurgeBlock := false
-		for _, fl := range flines {
-			if inPurgeBlock {
-				if isSiblingStart(fl.text) {
-					inPurgeBlock = false
-				} else {
-					continue
+		for i, fl := range flines {
+			if i > metaIdx && i < metaEnd {
+				if inPurgeBlock {
+					if isSiblingStart(fl.text) {
+						inPurgeBlock = false
+					} else {
+						continue
+					}
 				}
-			}
-			if m := flatMetaKeyRe.FindStringSubmatch(fl.text); m != nil {
-				if purge.KeyPrefix != "" && strings.HasPrefix(m[1], purge.KeyPrefix) {
-					continue
-				}
-				if purgeBlocks[m[1]] {
-					inPurgeBlock = true
-					continue
+				if m := flatMetaKeyRe.FindStringSubmatch(fl.text); m != nil {
+					if purge.KeyPrefix != "" && strings.HasPrefix(m[1], purge.KeyPrefix) {
+						continue
+					}
+					if purgeBlocks[m[1]] {
+						inPurgeBlock = true
+						continue
+					}
 				}
 			}
 			kept = append(kept, fl)
@@ -312,10 +359,7 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 		closing = len(flines) - 1
 	}
 
-	metaIdx, metaEnd, err := metaBounds()
-	if err != nil {
-		return nil, err
-	}
+	metaIdx, metaEnd := metaBounds()
 
 	// Replace existing key lines in place; a key whose desired value is
 	// empty is deleted rather than written.
@@ -336,7 +380,9 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 			}
 		}
 	}
-	// Drop deleted lines.
+	// Drop deleted lines, then recompute the metadata bounds: deletions
+	// shift every following index, so the insertion point must be derived
+	// from the filtered slice, never from the pre-deletion bounds.
 	if kept := flines[:0]; true {
 		for _, fl := range flines {
 			if !fl.deleted {
@@ -346,6 +392,8 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 		flines = kept
 		closing = len(flines) - 1
 	}
+	metaIdx, metaEnd = metaBounds()
+
 	// Insert missing keys at the end of the metadata block, in order.
 	// (Empty values were deletions, never insertions.)
 	var insert []fline
@@ -353,11 +401,7 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 		if k.Value == "" || replaced[k.Key] {
 			continue
 		}
-		fl := fline{text: fmt.Sprintf("  %s: %q", k.Key, k.Value), inserted: true}
-		if eol == "\r\n" {
-			fl.cr = true
-		}
-		insert = append(insert, fl)
+		insert = append(insert, insertedLine(fmt.Sprintf("  %s: %q", k.Key, k.Value)))
 	}
 	if len(insert) > 0 {
 		out := append([]fline(nil), flines[:metaEnd]...)
@@ -366,6 +410,12 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 		flines = out
 	}
 
+	return rebuildFrontmatter(flines, trailingNL, raw, fmEnd), nil
+}
+
+// rebuildFrontmatter renders the frontmatter lines back to bytes and
+// appends the untouched body (raw[fmEnd:]).
+func rebuildFrontmatter(flines []fline, trailingNL bool, raw []byte, fmEnd int) []byte {
 	var sb strings.Builder
 	for i, fl := range flines {
 		sb.WriteString(fl.text)
@@ -376,5 +426,5 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 			sb.WriteByte('\n')
 		}
 	}
-	return []byte(sb.String() + string(raw[fmEnd:])), nil
+	return []byte(sb.String() + string(raw[fmEnd:]))
 }
