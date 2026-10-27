@@ -622,14 +622,11 @@ func TestSourceFieldGuardedAndContained(t *testing.T) {
 	if _, err := Build([]byte(skillWithRegions), sc); err == nil {
 		t.Fatal("oversized source must be rejected")
 	}
-	// A valid http source renders inside a code span.
+	// B3: plain http is rejected — sanitization rule 2 requires https
+	// (only the host allowlist is deferred to Phase 4).
 	sc.Redirects = []Redirect{{ID: "r", Old: "a", New: "b", Source: "http://x.example/page"}}
-	out, err := Build([]byte(skillWithRegions), sc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(out), "`http://x.example/page`") {
-		t.Errorf("source not rendered contained:\n%s", out)
+	if _, err := Build([]byte(skillWithRegions), sc); err == nil {
+		t.Fatal("http source must be rejected (https only)")
 	}
 }
 
@@ -806,5 +803,108 @@ func TestLoadSidecarStrictDecoding(t *testing.T) {
 	write(`{"schema": 1} trailing`)
 	if _, err := LoadSidecar(dir); err == nil {
 		t.Error("trailing data must be rejected")
+	}
+}
+
+// B1 regression: a ``` line inside YAML frontmatter (e.g. in a
+// description: | block) must not leak fence state into the Markdown body.
+func TestFrontmatterFenceDoesNotLeak(t *testing.T) {
+	fence := "```"
+	head := "---\nname: t\ndescription: |\n  The literal delimiter is:\n  " + fence + "sh\nmetadata:\n  upkeep-pins: \"stale-pkg=1.0.0\"\n---\n"
+	sc := &Sidecar{Schema: 1, Pins: map[string]PinData{
+		"stale-pkg": {Kind: "npm", VerifiedFor: "1.0.0", LatestSeen: "2.0.0"},
+	}}
+
+	// (a) A fenced generated-marker example inside a frozen block: nothing
+	// is a region, render changes nothing, check reports no drift.
+	doc := head + "\n# T\n\n<!-- frozen:policy -->\nAuthor policy and example:\n\n" + fence + "markdown\n<!-- generated:pins -->\nSTALE BODY\n<!-- /generated:pins -->\n" + fence + "\n<!-- /frozen:policy -->\n"
+	out, err := Build([]byte(doc), sc)
+	if err != nil {
+		t.Fatalf("render must succeed: %v", err)
+	}
+	if string(out) != doc {
+		t.Errorf("the fenced author example inside the frozen block was modified:\n%s", out)
+	}
+	if tg, mErr, err := DriftTargets([]byte(doc), sc); err != nil || mErr != nil || len(tg) != 0 {
+		t.Errorf("no drift expected: targets=%v markerErr=%v err=%v", tg, mErr, err)
+	}
+
+	// (b) The same frontmatter with a real, stale region: render must
+	// update it and check must report the drift.
+	doc2 := head + "\n# T\n\n<!-- generated:pins -->\nstale\n<!-- /generated:pins -->\n"
+	tg, mErr, err := DriftTargets([]byte(doc2), sc)
+	if err != nil || mErr != nil {
+		t.Fatal(err, mErr)
+	}
+	if len(tg) != 1 || tg[0] != "region:pins" {
+		t.Errorf("targets = %v, want [region:pins]", tg)
+	}
+	out2, err := Build([]byte(doc2), sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out2), "| stale-pkg | 1.0.0 | 2.0.0 |  |") {
+		t.Errorf("the real region was not rendered:\n%s", out2)
+	}
+
+	// CRLF variant of (a).
+	docCRLF := strings.ReplaceAll(doc, "\n", "\r\n")
+	outC, err := Build([]byte(docCRLF), sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(outC) != docCRLF {
+		t.Errorf("CRLF variant of the fenced example was modified:\n%s", outC)
+	}
+}
+
+// B2 regression: replacing or deleting a block-scalar owned key consumes
+// the whole value span; author siblings stay byte-identical.
+func TestOwnedBlockScalarDriftAndNormalization(t *testing.T) {
+	doc := "---\nname: t\nmetadata:\n  keep: author-value\n  upkeep-pins: |\n    pkg=1.0.0\n  author: retain\n---\n# T\n"
+	sc := &Sidecar{Schema: 1, Pins: map[string]PinData{
+		"pkg": {Kind: "npm", VerifiedFor: "1.0.0"},
+	}}
+	// The block-scalar form drifts (render owns the key and writes it
+	// flat), and render normalizes it without touching the siblings.
+	tg, mErr, err := DriftTargets([]byte(doc), sc)
+	if err != nil || mErr != nil {
+		t.Fatal(err, mErr)
+	}
+	if len(tg) != 1 || tg[0] != "frontmatter:upkeep-pins" {
+		t.Errorf("targets = %v, want [frontmatter:upkeep-pins]", tg)
+	}
+	out, err := Build([]byte(doc), sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "---\nname: t\nmetadata:\n  keep: author-value\n  upkeep-pins: \"pkg=1.0.0\"\n  author: retain\n---\n# T\n"
+	if string(out) != want {
+		t.Errorf("out = %q, want %q", out, want)
+	}
+	// Fixed point after normalization.
+	if tg, _, _ := DriftTargets(out, sc); len(tg) != 0 {
+		t.Errorf("targets after render = %v, want none", tg)
+	}
+}
+
+// Duplicate owned keys: check reports DRIFT, render refuses.
+func TestDuplicateOwnedKeysRefused(t *testing.T) {
+	doc := "---\nname: t\nmetadata:\n  upkeep-pins: \"pkg=0.0.0\"\n  upkeep-pins: \"pkg=1.0.0\"\n---\n# T\n"
+	sc := &Sidecar{Schema: 1, Pins: map[string]PinData{
+		"pkg": {Kind: "npm", VerifiedFor: "1.0.0"},
+	}}
+	if _, err := Build([]byte(doc), sc); err == nil {
+		t.Fatal("render must refuse duplicate owned keys")
+	}
+	tg, mErr, err := DriftTargets([]byte(doc), sc)
+	if err != nil {
+		t.Fatalf("check must report, not error: %v", err)
+	}
+	if mErr == nil || !strings.Contains(mErr.Error(), "upkeep-pins") {
+		t.Errorf("markerErr = %v, want duplicate upkeep-pins", mErr)
+	}
+	if len(tg) != 0 {
+		t.Errorf("targets = %v, want none", tg)
 	}
 }

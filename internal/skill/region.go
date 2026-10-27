@@ -93,7 +93,20 @@ func ScanFrozenSpans(raw []byte) ([]Region, error) {
 
 func scanMarkerRegions(raw []byte, openRe, closeRe *regexp.Regexp, what string, strict bool) ([]Region, error) {
 	from, _ := FrontmatterEnd(raw)
-	masked := StripFencedBlocks(string(raw))
+	// Establish fence state from the Markdown body only: the frontmatter is
+	// YAML, and a literal ``` line inside it (e.g. in a `description: |`
+	// block) must not change the body's fence state. The frontmatter bytes
+	// are blanked (spaces, newlines kept) so the total length — and with it
+	// every body offset — is preserved.
+	var prefix strings.Builder
+	for i := 0; i < from; i++ {
+		if raw[i] == '\n' {
+			prefix.WriteByte('\n')
+		} else {
+			prefix.WriteByte(' ')
+		}
+	}
+	masked := prefix.String() + StripFencedBlocks(string(raw[from:]))
 	// StripFencedBlocks is length-preserving, so offsets in masked are
 	// offsets in raw.
 	if len(masked) != len(raw) {
@@ -361,24 +374,59 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 
 	metaIdx, metaEnd := metaBounds()
 
-	// Replace existing key lines in place; a key whose desired value is
-	// empty is deleted rather than written.
 	set := map[string]string{}
 	for _, k := range keys {
 		set[k.Key] = k.Value
 	}
-	replaced := map[string]bool{}
+
+	// Duplicate lines for a key we are writing are refused: editing one
+	// occurrence and leaving another would make render, check and the
+	// YAML parser disagree about the file.
+	counts := map[string]int{}
 	for i := metaIdx + 1; i < metaEnd; i++ {
 		if m := flatMetaKeyRe.FindStringSubmatch(flines[i].text); m != nil {
-			if v, wanted := set[m[1]]; wanted {
-				if v == "" {
-					flines[i].deleted = true
-				} else {
-					flines[i].text = fmt.Sprintf("  %s: %q", m[1], v)
-				}
-				replaced[m[1]] = true
+			if _, wanted := set[m[1]]; wanted {
+				counts[m[1]]++
 			}
 		}
+	}
+	for k, n := range counts {
+		if n > 1 {
+			return nil, fmt.Errorf("metadata has %d lines for key %q; remove the duplicates first", n, k)
+		}
+	}
+
+	// Replace existing key lines in place — consuming the key's whole
+	// value span (block scalars and multi-line scalars included) — and
+	// delete the span entirely when the desired value is empty.
+	replaced := map[string]bool{}
+	for i := metaIdx + 1; i < metaEnd; {
+		m := flatMetaKeyRe.FindStringSubmatch(flines[i].text)
+		if m == nil {
+			i++
+			continue
+		}
+		v, wanted := set[m[1]]
+		if !wanted {
+			i++
+			continue
+		}
+		end := FlatKeySpanEnd(flineTexts(flines), i)
+		if end > metaEnd {
+			end = metaEnd
+		}
+		if v == "" {
+			for k := i; k < end; k++ {
+				flines[k].deleted = true
+			}
+		} else {
+			flines[i].text = fmt.Sprintf("  %s: %q", m[1], v)
+			for k := i + 1; k < end; k++ {
+				flines[k].deleted = true
+			}
+		}
+		replaced[m[1]] = true
+		i = end
 	}
 	// Drop deleted lines, then recompute the metadata bounds: deletions
 	// shift every following index, so the insertion point must be derived
@@ -427,4 +475,53 @@ func rebuildFrontmatter(flines []fline, trailingNL bool, raw []byte, fmEnd int) 
 		}
 	}
 	return []byte(sb.String() + string(raw[fmEnd:]))
+}
+
+// flineTexts returns just the text of each frontmatter line.
+func flineTexts(flines []fline) []string {
+	out := make([]string, len(flines))
+	for i, fl := range flines {
+		out[i] = fl.text
+	}
+	return out
+}
+
+// FlatKeySpanEnd returns the exclusive end index of the value span of the
+// flat metadata key line at index i within lines: the key line plus any
+// continuation lines (blank, or indented deeper than the key's two
+// spaces — YAML block scalars, plain and quoted multi-line scalars). The
+// span ends at the first non-blank line indented at most two spaces;
+// trailing blank lines are included only when a deeper-indented line
+// follows them.
+func FlatKeySpanEnd(lines []string, i int) int {
+	end := i + 1
+	for end < len(lines) {
+		ln := lines[end]
+		if strings.TrimSpace(ln) == "" {
+			j := end + 1
+			for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+				j++
+			}
+			if j < len(lines) && indentOf(lines[j]) > 2 {
+				end = j // the blank run belongs to the scalar; continue
+				continue
+			}
+			break
+		}
+		if indentOf(ln) > 2 {
+			end++
+			continue
+		}
+		break
+	}
+	return end
+}
+
+// indentOf counts the leading spaces and tabs of s.
+func indentOf(s string) int {
+	n := 0
+	for n < len(s) && (s[n] == ' ' || s[n] == '\t') {
+		n++
+	}
+	return n
 }

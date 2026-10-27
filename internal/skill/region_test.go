@@ -261,3 +261,48 @@ func TestSetFlatKeysStableAcrossRuns(t *testing.T) {
 		t.Errorf("SetFlatKeys not idempotent:\n%q\n%q", out1, out2)
 	}
 }
+
+// B2 regression: replacing and deleting an owned key written as a YAML
+// block scalar consumes the whole value span; author siblings stay
+// byte-identical.
+func TestSetFlatKeysBlockScalarReplaceAndDelete(t *testing.T) {
+	doc := "---\nname: t\nmetadata:\n  keep: author-value\n  upkeep-pins: |\n    pkg=1.0.0\n  author: retain\n---\nbody\n"
+	out, err := SetFlatKeys([]byte(doc), "\n", []FlatKey{{Key: "upkeep-pins", Value: "pkg=2.0.0"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "---\nname: t\nmetadata:\n  keep: author-value\n  upkeep-pins: \"pkg=2.0.0\"\n  author: retain\n---\nbody\n"
+	if string(out) != want {
+		t.Errorf("replace: out = %q, want %q", out, want)
+	}
+	out, err = SetFlatKeys([]byte(doc), "\n", []FlatKey{{Key: "upkeep-pins", Value: ""}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = "---\nname: t\nmetadata:\n  keep: author-value\n  author: retain\n---\nbody\n"
+	if string(out) != want {
+		t.Errorf("delete: out = %q, want %q", out, want)
+	}
+}
+
+// B2 regression: a folded (>) block scalar next to an author sibling.
+func TestSetFlatKeysFoldedScalar(t *testing.T) {
+	doc := "---\nname: t\nmetadata:\n  upkeep-verified: >\n    2026-10-01\n  keep: author-value\n---\nbody\n"
+	out, err := SetFlatKeys([]byte(doc), "\n", []FlatKey{{Key: "upkeep-verified", Value: "2026-10-27"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "---\nname: t\nmetadata:\n  upkeep-verified: \"2026-10-27\"\n  keep: author-value\n---\nbody\n"
+	if string(out) != want {
+		t.Errorf("out = %q, want %q", out, want)
+	}
+}
+
+// Duplicate owned keys are refused with a precise error.
+func TestSetFlatKeysDuplicateRefused(t *testing.T) {
+	doc := "---\nname: t\nmetadata:\n  upkeep-pins: \"a=1\"\n  other: \"x\"\n  upkeep-pins: \"a=2\"\n---\nbody\n"
+	_, err := SetFlatKeys([]byte(doc), "\n", []FlatKey{{Key: "upkeep-pins", Value: "a=3"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "upkeep-pins") {
+		t.Errorf("err = %v, want duplicate upkeep-pins refusal", err)
+	}
+}

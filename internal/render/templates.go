@@ -130,9 +130,11 @@ func (sc *Sidecar) Validate() error {
 			}
 		}
 		if r.Source != "" {
+			// Sanitization rule 2: source must be an https URL (the host
+			// allowlist is deferred to the drafting phase, Issue #11).
 			u, err := url.Parse(r.Source)
-			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-				return fmt.Errorf("redirect %s source: %q is not an http(s) URL", r.ID, r.Source)
+			if err != nil || u.Scheme != "https" || u.Host == "" {
+				return fmt.Errorf("redirect %s source: %q is not an https URL", r.ID, r.Source)
 			}
 		}
 	}

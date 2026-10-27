@@ -111,8 +111,12 @@ func DriftTargets(raw []byte, sc *Sidecar) (targets []string, markerErr error, e
 	}
 	// Owned frontmatter keys: read from the metadata block only, with a
 	// presence flag, so check agrees with Build in every case — an absent
-	// key and an empty one are different states.
-	current := ownedKeyValues(raw)
+	// key and an empty one are different states. Duplicate owned keys are
+	// a marker-class problem (check reports DRIFT; the writer refuses).
+	current, dupErr := ownedKeyValues(raw)
+	if dupErr != nil {
+		return nil, dupErr, nil
+	}
 	for _, k := range ownedKeyState(sc) {
 		cur := current[k.Key]
 		match := cur.present && k.Value != "" && cur.value == k.Value
@@ -146,18 +150,23 @@ func ownedKeyState(sc *Sidecar) []skill.FlatKey {
 
 // ownedKeyValues reads the current values of the renderer-owned flat keys
 // from the metadata block only (the same scope the writer uses), keyed by
-// key name; a key missing from the file has present=false. Values written
-// by SetFlatKeys with %q are unquoted via strconv.Unquote, falling back to
-// the raw value.
-func ownedKeyValues(raw []byte) map[string]ownedKey {
+// key name; a key missing from the file has present=false. Values are
+// decoded as YAML scalars: double-quoted values via strconv.Unquote (with
+// a raw fallback), single-quoted values with ” meaning a literal quote.
+// A multi-line value (block or plain scalar) is reported with its joined
+// text so it drifts until render normalizes it to a flat line. Duplicate
+// owned keys are returned as an error: the file must be repaired before
+// check and render can agree.
+func ownedKeyValues(raw []byte) (map[string]ownedKey, error) {
 	out := map[string]ownedKey{
 		"upkeep-pins":     {},
 		"upkeep-verified": {},
 	}
 	fmEnd, ok := skill.FrontmatterEnd(raw)
 	if !ok {
-		return out
+		return out, nil
 	}
+	var metaLines []string
 	inMeta := false
 	for _, ln := range strings.Split(string(raw[:fmEnd]), "\n") {
 		ln = strings.TrimSuffix(ln, "\r")
@@ -170,22 +179,60 @@ func ownedKeyValues(raw []byte) map[string]ownedKey {
 		if ln != "" && !isSpaceByte(ln[0]) {
 			break // metadata block ended
 		}
-		if m := ownedKeyLineRe.FindStringSubmatch(ln); m != nil {
-			v := strings.TrimSpace(m[2])
-			if u, err := strconv.Unquote(v); err == nil {
-				v = u
+		metaLines = append(metaLines, ln)
+	}
+	seen := map[string]bool{}
+	for i := 0; i < len(metaLines); i++ {
+		m := ownedKeyLineRe.FindStringSubmatch(metaLines[i])
+		if m == nil {
+			continue
+		}
+		if seen[m[1]] {
+			return nil, fmt.Errorf("metadata has more than one %s line; remove the duplicates first", m[1])
+		}
+		seen[m[1]] = true
+		end := skill.FlatKeySpanEnd(metaLines, i)
+		val := strings.TrimSpace(m[2])
+		if end > i+1 {
+			// A multi-line value (block or plain scalar): report the
+			// joined text; it can never match a single-line rendered
+			// value, so it drifts until render normalizes it.
+			var parts []string
+			for _, ln := range metaLines[i+1 : end] {
+				parts = append(parts, strings.TrimSpace(ln))
 			}
-			out[m[1]] = ownedKey{value: v, present: true}
+			val = val + "\n" + strings.Join(parts, "\n")
+		}
+		out[m[1]] = ownedKey{value: decodeYAMLScalar(val), present: true}
+		i = end - 1
+	}
+	return out, nil
+}
+
+// decodeYAMLScalar decodes a single-line YAML scalar: single-quoted values
+// (” is a literal quote), double-quoted values via strconv.Unquote, and
+// anything else as the raw text.
+func decodeYAMLScalar(v string) string {
+	if len(v) >= 2 && strings.HasPrefix(v, "'") && strings.HasSuffix(v, "'") {
+		return strings.ReplaceAll(v[1:len(v)-1], "''", "'")
+	}
+	if strings.HasPrefix(v, `"`) {
+		if u, err := strconv.Unquote(v); err == nil {
+			return u
 		}
 	}
-	return out
+	return v
 }
 
 // hasOwnedKeyLine reports whether the metadata block carries any owned key
 // line (so Build rewrites the frontmatter even when the sidecar has no
 // pins: an owned key with no backing data is removed).
 func hasOwnedKeyLine(raw []byte) bool {
-	for _, k := range ownedKeyValues(raw) {
+	vals, err := ownedKeyValues(raw)
+	if err != nil {
+		return true // duplicate owned keys: the writer will refuse anyway
+	}
+	for _, k := range vals {
 		if k.present {
 			return true
 		}
