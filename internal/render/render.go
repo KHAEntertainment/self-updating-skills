@@ -191,7 +191,13 @@ func ownedKeyValues(raw []byte) (map[string]ownedKey, error) {
 			return nil, fmt.Errorf("metadata has more than one %s line; remove the duplicates first", m[1])
 		}
 		seen[m[1]] = true
-		end := skill.FlatKeySpanEnd(metaLines, i)
+		end, safe := skill.FlatKeySpanEnd(metaLines, i)
+		if !safe {
+			// A multi-line quoted or plain continued owned value: report it
+			// through the marker-error path (a DRIFT item; the writer
+			// refuses, so no render prescription).
+			return nil, fmt.Errorf("metadata key %q has a multi-line value that render refuses to edit; rewrite it as a single line", m[1])
+		}
 		val := strings.TrimSpace(m[2])
 		if end > i+1 {
 			// A multi-line value (block or plain scalar): report the

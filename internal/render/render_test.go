@@ -908,3 +908,58 @@ func TestDuplicateOwnedKeysRefused(t *testing.T) {
 		t.Errorf("targets = %v, want none", tg)
 	}
 }
+
+// F3 regression: an indented YAML comment after a completed single-line
+// owned value is author content — preserved byte-for-byte, no spurious
+// DRIFT.
+func TestIndentedCommentAfterOwnedValuePreserved(t *testing.T) {
+	doc := "---\nname: t\nmetadata:\n  upkeep-pins: \"pkg=1.0.0\"\n    # Author note: preserve this explanation.\n  author: retain\n---\n# T\n"
+	sc := &Sidecar{Schema: 1, Pins: map[string]PinData{
+		"pkg": {Kind: "npm", VerifiedFor: "1.0.0"},
+	}}
+	out, err := Build([]byte(doc), sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != doc {
+		t.Errorf("the indented author comment was not preserved:\n%s", out)
+	}
+	if tg, mErr, err := DriftTargets([]byte(doc), sc); err != nil || mErr != nil || len(tg) != 0 {
+		t.Errorf("no drift expected: targets=%v markerErr=%v err=%v", tg, mErr, err)
+	}
+	// A value change still replaces only the key line; the comment and the
+	// sibling survive.
+	sc.Pins["pkg"] = PinData{Kind: "npm", VerifiedFor: "2.0.0"}
+	out, err = Build([]byte(doc), sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "---\nname: t\nmetadata:\n  upkeep-pins: \"pkg=2.0.0\"\n    # Author note: preserve this explanation.\n  author: retain\n---\n# T\n"
+	if string(out) != want {
+		t.Errorf("out = %q, want %q", out, want)
+	}
+}
+
+// F3: a plain multi-line continuation after a completed scalar cannot be
+// edited safely — refuse with nothing written.
+func TestPlainMultilineContinuationRefused(t *testing.T) {
+	doc := "---\nname: t\nmetadata:\n  upkeep-pins: \"pkg=1.0.0\"\n    continuation\n  author: retain\n---\n# T\n"
+	sc := &Sidecar{Schema: 1, Pins: map[string]PinData{
+		"pkg": {Kind: "npm", VerifiedFor: "2.0.0"},
+	}}
+	if _, err := Build([]byte(doc), sc); err == nil {
+		t.Fatal("plain multi-line continuation must be refused")
+	}
+	// An unterminated quoted scalar likewise refuses.
+	doc2 := "---\nname: t\nmetadata:\n  upkeep-pins: \"pkg=1.0.0\n    more\n  author: retain\n---\n# T\n"
+	if _, err := Build([]byte(doc2), sc); err == nil {
+		t.Fatal("unterminated quoted scalar must be refused")
+	}
+	// And check reports it as a DRIFT item, not a hard error, without
+	// prescribing a render that would refuse.
+	if _, mErr, err := DriftTargets([]byte(doc), sc); err != nil {
+		t.Fatalf("check must report, not error: %v", err)
+	} else if mErr == nil || !strings.Contains(mErr.Error(), "upkeep-pins") {
+		t.Errorf("markerErr = %v, want the unsafe owned key named", mErr)
+	}
+}

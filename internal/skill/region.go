@@ -411,7 +411,10 @@ func SetFlatKeys(raw []byte, eol string, keys []FlatKey, purge *PurgeSpec) ([]by
 			i++
 			continue
 		}
-		end := FlatKeySpanEnd(flineTexts(flines), i)
+		end, safe := FlatKeySpanEnd(flineTexts(flines), i)
+		if !safe {
+			return nil, fmt.Errorf("metadata key %q has a multi-line value that cannot be edited safely; rewrite it as a single line", m[1])
+		}
 		if end > metaEnd {
 			end = metaEnd
 		}
@@ -487,34 +490,110 @@ func flineTexts(flines []fline) []string {
 }
 
 // FlatKeySpanEnd returns the exclusive end index of the value span of the
-// flat metadata key line at index i within lines: the key line plus any
-// continuation lines (blank, or indented deeper than the key's two
-// spaces — YAML block scalars, plain and quoted multi-line scalars). The
-// span ends at the first non-blank line indented at most two spaces;
-// trailing blank lines are included only when a deeper-indented line
-// follows them.
-func FlatKeySpanEnd(lines []string, i int) int {
-	end := i + 1
-	for end < len(lines) {
-		ln := lines[end]
+// flat metadata key line at index i within lines, and whether that span is
+// safe to edit. Continuation lines apply only after a block-scalar header
+// (|, > and their chomping/indent variants) or an unterminated quoted
+// scalar. After a completed single-line scalar, a deeper-indented comment
+// is author content — the span is the key line alone and the comment is
+// preserved — while any other deeper-indented line (a plain multi-line
+// continuation, or a multi-line quoted value) cannot be edited safely:
+// safe is false and the writer must refuse. The returned end is always the
+// conservative span (the key line plus deeper-indented/blank lines up to
+// the first non-blank line indented at most two spaces; trailing blank
+// lines are included only when a deeper-indented line follows them).
+func FlatKeySpanEnd(lines []string, i int) (end int, safe bool) {
+	conservative := i + 1
+	for conservative < len(lines) {
+		ln := lines[conservative]
 		if strings.TrimSpace(ln) == "" {
-			j := end + 1
+			j := conservative + 1
 			for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
 				j++
 			}
 			if j < len(lines) && indentOf(lines[j]) > 2 {
-				end = j // the blank run belongs to the scalar; continue
+				conservative = j // the blank run belongs to the scalar; continue
 				continue
 			}
 			break
 		}
 		if indentOf(ln) > 2 {
-			end++
+			conservative++
 			continue
 		}
 		break
 	}
-	return end
+
+	val := ""
+	if flatMetaKeyRe.MatchString(lines[i]) {
+		val = strings.TrimSpace(afterColon(lines[i]))
+	}
+	// Block-scalar headers (and an empty value, whose indented content is
+	// a block scalar): the conservative span is the value.
+	if val == "" || blockScalarHeaderRe.MatchString(val) {
+		return conservative, true
+	}
+	// A quoted scalar that does not terminate on its line continues on the
+	// deeper-indented lines; editing it is not supported (safe=false, the
+	// writer refuses), but the conservative span describes the value.
+	if strings.HasPrefix(val, `"`) || strings.HasPrefix(val, "'") {
+		if !terminatedQuoted(val) {
+			return conservative, false
+		}
+	}
+	// Completed single-line scalar: if only deeper-indented comments
+	// follow, they are author bytes — the span is the key line alone.
+	if conservative == i+1 {
+		return i + 1, true
+	}
+	for k := i + 1; k < conservative; k++ {
+		ln := lines[k]
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(ln), "#") {
+			// A plain multi-line continuation: not safely editable.
+			return conservative, false
+		}
+	}
+	return i + 1, true
+}
+
+// blockScalarHeaderRe matches YAML block-scalar indicators with optional
+// chomping and explicit-indentation modifiers: |, >, |-, >+, |2, >2-, ...
+var blockScalarHeaderRe = regexp.MustCompile(`^[|>][+-]?[0-9]*[+-]?$`)
+
+// afterColon returns everything after the first ':' of the flat key line.
+func afterColon(line string) string {
+	if k := strings.Index(line, ":"); k >= 0 {
+		return line[k+1:]
+	}
+	return ""
+}
+
+// terminatedQuoted reports whether a quoted scalar value closes its quote
+// on the same line (ignoring what follows the closing quote).
+func terminatedQuoted(val string) bool {
+	q := val[0]
+	if len(val) < 2 {
+		return false
+	}
+	body := val[1:]
+	i := 0
+	for i < len(body) {
+		switch {
+		case q == '"' && body[i] == '\\':
+			i += 2
+		case body[i] == q:
+			if q == '\'' && i+1 < len(body) && body[i+1] == '\'' {
+				i += 2 // doubled quote inside a single-quoted scalar
+				continue
+			}
+			return true
+		default:
+			i++
+		}
+	}
+	return false
 }
 
 // indentOf counts the leading spaces and tabs of s.
@@ -524,4 +603,45 @@ func indentOf(s string) int {
 		n++
 	}
 	return n
+}
+
+// OwnedKeyDuplicate reports the first renderer-owned flat key
+// (upkeep-pins or upkeep-verified) that appears more than once in the
+// metadata block. It is the shared preflight render and stamp run before
+// touching a skill with a sidecar, so both refuse the same files.
+func OwnedKeyDuplicate(raw []byte) error {
+	fmEnd, ok := FrontmatterEnd(raw)
+	if !ok {
+		return nil
+	}
+	var lines []string
+	inMeta := false
+	for _, ln := range strings.Split(string(raw[:fmEnd]), "\n") {
+		ln = strings.TrimSuffix(ln, "\r")
+		if !inMeta {
+			if metadataLineRe.MatchString(ln) {
+				inMeta = true
+			}
+			continue
+		}
+		if ln != "" && !isSpaceByte(ln[0]) {
+			break
+		}
+		lines = append(lines, ln)
+	}
+	seen := map[string]bool{}
+	for _, ln := range lines {
+		m := flatMetaKeyRe.FindStringSubmatch(ln)
+		if m == nil {
+			continue
+		}
+		if m[1] != "upkeep-pins" && m[1] != "upkeep-verified" {
+			continue
+		}
+		if seen[m[1]] {
+			return fmt.Errorf("metadata has more than one %s line; remove the duplicates first", m[1])
+		}
+		seen[m[1]] = true
+	}
+	return nil
 }
