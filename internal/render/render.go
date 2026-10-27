@@ -6,12 +6,19 @@ package render
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/KHAEntertainment/self-updating-skills/internal/skill"
 )
 
-var ownedKeyLineRe = regexp.MustCompile(`^[ \t]{2}(upkeep-pins|upkeep-verified):[ \t]*(.*)\r?$`)
+var (
+	ownedKeyLineRe = regexp.MustCompile(`^[ \t]{2}(upkeep-pins|upkeep-verified):[ \t]*(.*)\r?$`)
+	metadataLineRe = regexp.MustCompile(`^metadata:[ \t]*\r?$`)
+)
+
+// isSpaceByte reports whether c is a space or tab.
+func isSpaceByte(c byte) bool { return c == ' ' || c == '\t' }
 
 // Build renders the new SKILL.md bytes from raw and the sidecar. It fails
 // (and the caller writes nothing) on: sidecar fields failing sanitization,
@@ -65,47 +72,62 @@ func Build(raw []byte, sc *Sidecar) ([]byte, error) {
 // would produce and names every part that differs: "region:<id>" for a
 // generated region whose body differs from the sidecar and
 // "frontmatter:<key>" for a renderer-owned key with a stale value (or one
-// that is present but no longer backed by sidecar data). Marker/sidecar
-// validation errors are returned as errors: check must not guess.
-func DriftTargets(raw []byte, sc *Sidecar) ([]string, error) {
+// that is present but no longer backed by sidecar data).
+//
+// markerErr reports malformed generated markers (unclosed, nested, stray,
+// duplicated, unknown, or overlapping frozen blocks): a DRIFT condition
+// that check reports as an item, never a hard error — but render refuses
+// such a file, so nothing may prescribe "run: upkeep render" for it. err
+// is reserved for sidecar validation failures, which check surfaces as
+// structured errors.
+func DriftTargets(raw []byte, sc *Sidecar) (targets []string, markerErr error, err error) {
 	if err := sc.Validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	regions, err := skill.ScanGeneratedRegions(raw)
 	if err != nil {
-		return nil, err
+		return nil, err, nil
 	}
 	frozen, err := skill.ScanFrozenSpans(raw)
 	if err != nil {
-		return nil, err
+		return nil, err, nil
 	}
 	if err := skill.CheckRegionOverlap(regions, frozen); err != nil {
-		return nil, err
+		return nil, err, nil
 	}
 	eol := skill.FileEOL(raw)
-	var targets []string
 	for _, r := range regions {
 		if !IsRegionID(r.ID) {
-			return nil, fmt.Errorf("unknown generated region %q (built-ins: pins, freshness, redirects)", r.ID)
+			return nil, fmt.Errorf("unknown generated region %q (built-ins: pins, freshness, redirects)", r.ID), nil
 		}
 		body, err := RegionBody(r.ID, sc)
 		if err != nil {
-			return nil, err
+			return nil, err, nil
 		}
 		want := toEOL(body, eol) + eol
 		if string(raw[r.BodyStart:r.BodyEnd]) != want {
 			targets = append(targets, "region:"+r.ID)
 		}
 	}
-	// Owned frontmatter keys: current value must equal the desired value
-	// ("" means the key must not exist at all).
+	// Owned frontmatter keys: read from the metadata block only, with a
+	// presence flag, so check agrees with Build in every case — an absent
+	// key and an empty one are different states.
 	current := ownedKeyValues(raw)
 	for _, k := range ownedKeyState(sc) {
-		if current[k.Key] != k.Value {
+		cur := current[k.Key]
+		match := cur.present && k.Value != "" && cur.value == k.Value
+		if !match && !(cur.present == false && k.Value == "") {
 			targets = append(targets, "frontmatter:"+k.Key)
 		}
 	}
-	return targets, nil
+	return targets, nil, nil
+}
+
+// ownedKey is one renderer-owned frontmatter key: its current value and
+// whether the key is present at all.
+type ownedKey struct {
+	value   string
+	present bool
 }
 
 // ownedKeyState returns both renderer-owned frontmatter keys with their
@@ -123,35 +145,48 @@ func ownedKeyState(sc *Sidecar) []skill.FlatKey {
 }
 
 // ownedKeyValues reads the current values of the renderer-owned flat keys
-// from the frontmatter (unquoted), keyed by key name; a key missing from
-// the file maps to "".
-func ownedKeyValues(raw []byte) map[string]string {
-	out := map[string]string{"upkeep-pins": "", "upkeep-verified": ""}
+// from the metadata block only (the same scope the writer uses), keyed by
+// key name; a key missing from the file has present=false. Values written
+// by SetFlatKeys with %q are unquoted via strconv.Unquote, falling back to
+// the raw value.
+func ownedKeyValues(raw []byte) map[string]ownedKey {
+	out := map[string]ownedKey{
+		"upkeep-pins":     {},
+		"upkeep-verified": {},
+	}
 	fmEnd, ok := skill.FrontmatterEnd(raw)
 	if !ok {
 		return out
 	}
+	inMeta := false
 	for _, ln := range strings.Split(string(raw[:fmEnd]), "\n") {
-		if m := ownedKeyLineRe.FindStringSubmatch(strings.TrimSuffix(ln, "\r")); m != nil {
+		ln = strings.TrimSuffix(ln, "\r")
+		if !inMeta {
+			if metadataLineRe.MatchString(ln) {
+				inMeta = true
+			}
+			continue
+		}
+		if ln != "" && !isSpaceByte(ln[0]) {
+			break // metadata block ended
+		}
+		if m := ownedKeyLineRe.FindStringSubmatch(ln); m != nil {
 			v := strings.TrimSpace(m[2])
-			v = strings.TrimSuffix(strings.TrimPrefix(v, "\""), "\"")
-			v = strings.TrimSuffix(strings.TrimPrefix(v, "'"), "'")
-			out[m[1]] = v
+			if u, err := strconv.Unquote(v); err == nil {
+				v = u
+			}
+			out[m[1]] = ownedKey{value: v, present: true}
 		}
 	}
 	return out
 }
 
-// hasOwnedKeyLine reports whether the frontmatter carries any owned key
+// hasOwnedKeyLine reports whether the metadata block carries any owned key
 // line (so Build rewrites the frontmatter even when the sidecar has no
 // pins: an owned key with no backing data is removed).
 func hasOwnedKeyLine(raw []byte) bool {
-	fmEnd, ok := skill.FrontmatterEnd(raw)
-	if !ok {
-		return false
-	}
-	for _, ln := range strings.Split(string(raw[:fmEnd]), "\n") {
-		if ownedKeyLineRe.MatchString(strings.TrimSuffix(ln, "\r")) {
+	for _, k := range ownedKeyValues(raw) {
+		if k.present {
 			return true
 		}
 	}

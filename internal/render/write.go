@@ -17,15 +17,21 @@ var renameFn = os.Rename
 // WriteFileAtomic writes data to path atomically: the temp file is created
 // in the same directory with the target's mode (0644 for a new file),
 // written, fsynced, renamed over the target, and the directory fsynced.
+// A symlinked target is resolved first (filepath.EvalSymlinks), so the
+// symlink itself survives and the file it points to gets the new bytes.
 func WriteFileAtomic(path string, data []byte) error {
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	}
 	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
+	if info, err := os.Stat(target); err == nil {
 		mode = info.Mode()
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	dir := filepath.Dir(target)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(target)+".tmp-*")
 	if err != nil {
 		return err
 	}
@@ -50,7 +56,7 @@ func WriteFileAtomic(path string, data []byte) error {
 		os.Remove(tmpName)
 		return err
 	}
-	if err := renameFn(tmpName, path); err != nil {
+	if err := renameFn(tmpName, target); err != nil {
 		os.Remove(tmpName)
 		return err
 	}

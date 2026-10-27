@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Built-in region ids.
@@ -28,15 +29,16 @@ func IsRegionID(id string) bool {
 
 // maxFieldLen is the bound for any sidecar field rendered into a region
 // (sanitization rule 1: old/new are at most 120 characters; the same bound
-// is applied to every rendered field as a guard).
+// is applied to every rendered field as a guard). The limit counts
+// characters (runes), not bytes.
 const maxFieldLen = 120
 
 // validateField rejects a sidecar field that must never reach a skill file:
 // too long, multi-line, or containing region/frozen markers or a run of
 // three or more backticks.
 func validateField(what, s string) error {
-	if len(s) > maxFieldLen {
-		return fmt.Errorf("%s: %d bytes exceeds the %d-byte limit", what, len(s), maxFieldLen)
+	if n := utf8.RuneCountInString(s); n > maxFieldLen {
+		return fmt.Errorf("%s: %d characters exceeds the %d-character limit", what, n, maxFieldLen)
 	}
 	if strings.ContainsAny(s, "\n\r") {
 		return fmt.Errorf("%s: contains a line break", what)
@@ -54,14 +56,29 @@ func cell(s string) string {
 	return strings.ReplaceAll(s, "|", `\|`)
 }
 
-// codeSpan renders s as a markdown code span with backticks escaped
-// (sanitization rule 1). Content with a backtick is wrapped in double
-// backtick delimiters with padding spaces.
+// codeSpan renders s as a CommonMark code span with the content contained:
+// the delimiter run is one backtick longer than the longest backtick run
+// inside s, and space padding is added when the content begins or ends
+// with a backtick (sanitization rule 1; validation caps interior runs at
+// two). Pipes are escaped so the cell cannot break the table.
 func codeSpan(s string) string {
-	if strings.Contains(s, "`") {
-		return "`` " + strings.ReplaceAll(s, "|", `\|`) + " ``"
+	longest, run := 0, 0
+	for _, r := range s {
+		if r == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
 	}
-	return "`" + strings.ReplaceAll(s, "|", `\|`) + "`"
+	delim := strings.Repeat("`", longest+1)
+	pad := ""
+	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
+		pad = " "
+	}
+	return delim + pad + strings.ReplaceAll(s, "|", `\|`) + pad + delim
 }
 
 // Validate checks every field the renderer would output. Render refuses to
@@ -73,6 +90,8 @@ func (sc *Sidecar) Validate() error {
 			what, val string
 		}{
 			{"pin " + n + " name", n},
+			{"pin " + n + " kind", p.Kind},
+			{"pin " + n + " repo", p.Repo},
 			{"pin " + n + " verified_for", p.VerifiedFor},
 			{"pin " + n + " latest_seen", p.LatestSeen},
 			{"pin " + n + " checked_at", p.CheckedAt},
@@ -104,6 +123,7 @@ func (sc *Sidecar) Validate() error {
 			{"redirect " + r.ID + " old", r.Old},
 			{"redirect " + r.ID + " new", r.New},
 			{"redirect " + r.ID + " since", r.Since},
+			{"redirect " + r.ID + " source", r.Source},
 		} {
 			if err := validateField(f.what, f.val); err != nil {
 				return err
@@ -111,8 +131,8 @@ func (sc *Sidecar) Validate() error {
 		}
 		if r.Source != "" {
 			u, err := url.Parse(r.Source)
-			if err != nil || u.Scheme != "https" || u.Host == "" {
-				return fmt.Errorf("redirect %s source: %q is not an https URL", r.ID, r.Source)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				return fmt.Errorf("redirect %s source: %q is not an http(s) URL", r.ID, r.Source)
 			}
 		}
 	}
@@ -156,7 +176,7 @@ func RegionBody(id string, sc *Sidecar) (string, error) {
 			return rows[i].ID < rows[j].ID
 		})
 		for _, r := range rows {
-			lines = append(lines, fmt.Sprintf("| %s → %s | %s | %s |", codeSpan(r.Old), codeSpan(r.New), cell(r.Since), cell(r.Source)))
+			lines = append(lines, fmt.Sprintf("| %s → %s | %s | %s |", codeSpan(r.Old), codeSpan(r.New), cell(r.Since), codeSpan(r.Source)))
 		}
 		return strings.Join(lines, "\n"), nil
 	default:

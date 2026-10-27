@@ -159,7 +159,7 @@ func TestBuildRejectsBadSidecarFields(t *testing.T) {
 		func(sc *Sidecar) { sc.Redirects = []Redirect{{ID: "r", Old: "a <!-- b", New: "y"}} },
 		func(sc *Sidecar) { sc.Redirects = []Redirect{{ID: "r", Old: "a```b", New: "y"}} },
 		func(sc *Sidecar) {
-			sc.Redirects = []Redirect{{ID: "r", Old: "a", New: "y", Source: "http://x.example"}}
+			sc.Redirects = []Redirect{{ID: "r", Old: "a", New: "y", Source: "ftp://x.example"}}
 		},
 		func(sc *Sidecar) { sc.Pins["bad\nname"] = PinData{VerifiedFor: "1"} },
 	}
@@ -216,22 +216,22 @@ func TestDriftTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tg, err := DriftTargets(out, sc); err != nil || len(tg) != 0 {
-		t.Fatalf("targets = %v (err %v), want none", tg, err)
+	if tg, mErr, err := DriftTargets(out, sc); err != nil || mErr != nil || len(tg) != 0 {
+		t.Fatalf("targets = %v (markerErr %v, err %v), want none", tg, mErr, err)
 	}
 	// Hand edit inside the pins region (the latest-seen cell only exists
 	// in the region body, not the frontmatter).
 	bad := strings.Replace(string(out), "2.1.312", "9.9.9", 1)
-	tg, err := DriftTargets([]byte(bad), sc)
-	if err != nil {
-		t.Fatal(err)
+	tg, mErr, err := DriftTargets([]byte(bad), sc)
+	if err != nil || mErr != nil {
+		t.Fatal(err, mErr)
 	}
 	if len(tg) != 1 || tg[0] != "region:pins" {
 		t.Errorf("targets = %v, want [region:pins]", tg)
 	}
 	// Stale owned frontmatter key.
 	bad2 := strings.Replace(string(out), `upkeep-pins: "@anthropic-ai/claude-code=2.1.310"`, `upkeep-pins: "@anthropic-ai/claude-code=0.0.1"`, 1)
-	tg, err = DriftTargets([]byte(bad2), sc)
+	tg, _, err = DriftTargets([]byte(bad2), sc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestDriftTargets(t *testing.T) {
 	// A pin removed from the sidecar: the file's key is now unbacked.
 	sc2 := testSidecar()
 	sc2.Pins = map[string]PinData{}
-	tg, err = DriftTargets(out, sc2)
+	tg, _, err = DriftTargets(out, sc2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,9 +374,8 @@ func TestApplySecondRenameFailureConverges(t *testing.T) {
 	if string(gotSkill) != skillWithRegions {
 		t.Error("SKILL.md changed despite the failed rename")
 	}
-	tg, err := DriftTargets(gotSkill, sc)
-	if err != nil || len(tg) == 0 {
-		t.Errorf("drift targets after partial apply = %v (err %v), want non-empty", tg, err)
+	if tg, mErr, err := DriftTargets(gotSkill, sc); err != nil || mErr != nil || len(tg) == 0 {
+		t.Errorf("drift targets after partial apply = %v (markerErr %v, err %v), want non-empty", tg, mErr, err)
 	}
 	// The next render converges.
 	renameFn = os.Rename
@@ -576,5 +575,198 @@ func TestDiffNoTrailingNewlineInputs(t *testing.T) {
 	d := Diff("a\nb", "a\nc")
 	if !strings.Contains(d, "-b") || !strings.Contains(d, "+c") {
 		t.Errorf("diff without trailing newlines broken:\n%s", d)
+	}
+}
+
+// R3 regression: the code-span delimiter must be longer than any interior
+// backtick run, so the value (including one with exactly two backticks)
+// stays contained.
+func TestCodeSpanDelimiterLongestRunPlusOne(t *testing.T) {
+	v := "before `` **INSTRUCTION** `` after"
+	got := codeSpan(v)
+	// One code span: delimiter runs of three, interior runs of two — the
+	// delimiters cannot be matched by any interior run, so the whole
+	// value stays inside the span.
+	if !strings.HasPrefix(got, "```before") || !strings.HasSuffix(got, "after```") {
+		t.Errorf("codeSpan = %q, want ```-delimited span around the value", got)
+	}
+	if strings.Count(got, "```") != 2 {
+		t.Errorf("codeSpan = %q, want exactly two delimiter runs", got)
+	}
+	// Single backtick in the value: two-backtick delimiters, padding
+	// because the value ends with a backtick.
+	if got := codeSpan("old `x`"); got != "`` old `x` ``" {
+		t.Errorf("codeSpan = %q, want %q", got, "`` old `x` ``")
+	}
+	// No backticks: plain single-delimiter span.
+	if got := codeSpan("plain"); got != "`plain`" {
+		t.Errorf("codeSpan = %q, want `plain`", got)
+	}
+}
+
+// R4 regression: source runs through the same field guards (plus the
+// http(s) URL rule) and is rendered contained.
+func TestSourceFieldGuardedAndContained(t *testing.T) {
+	sc := testSidecar()
+	sc.Redirects = []Redirect{{
+		ID:     "r",
+		Old:    "a",
+		New:    "b",
+		Source: "https://evil.example/<!-- generated:pins --> **UNVERIFIED INSTRUCTION**",
+	}}
+	if _, err := Build([]byte(skillWithRegions), sc); err == nil {
+		t.Fatal("marker-bearing source must be rejected")
+	}
+	// A long source is bounded by the same 120-character rule.
+	sc.Redirects = []Redirect{{ID: "r", Old: "a", New: "b", Source: "https://x.example/" + strings.Repeat("p", 130)}}
+	if _, err := Build([]byte(skillWithRegions), sc); err == nil {
+		t.Fatal("oversized source must be rejected")
+	}
+	// A valid http source renders inside a code span.
+	sc.Redirects = []Redirect{{ID: "r", Old: "a", New: "b", Source: "http://x.example/page"}}
+	out, err := Build([]byte(skillWithRegions), sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "`http://x.example/page`") {
+		t.Errorf("source not rendered contained:\n%s", out)
+	}
+}
+
+// R7 regression: owned keys are read from the metadata block only, with a
+// presence flag — check's drift report and render's fixed point agree.
+func TestDriftTargetsAgreesWithBuild(t *testing.T) {
+	// (1) An empty-valued owned key present in the file with an empty
+	// sidecar: render removes the line, so check must report DRIFT too.
+	doc := "---\nname: t\nmetadata:\n  upkeep-pins: \"\"\n---\n# T\n"
+	sc := &Sidecar{Schema: 1}
+	tg, mErr, err := DriftTargets([]byte(doc), sc)
+	if err != nil || mErr != nil {
+		t.Fatal(err, mErr)
+	}
+	if len(tg) != 1 || tg[0] != "frontmatter:upkeep-pins" {
+		t.Errorf("targets = %v, want [frontmatter:upkeep-pins]", tg)
+	}
+	out, err := Build([]byte(doc), sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "upkeep-pins") {
+		t.Errorf("render should remove the empty owned key:\n%s", out)
+	}
+	// Fixed point after the removal.
+	if tg, _, _ := DriftTargets(out, sc); len(tg) != 0 {
+		t.Errorf("targets after render = %v, want none", tg)
+	}
+	// (2) An author-owned upkeep-pins under another object is out of
+	// scope: no drift, and render leaves it byte-identically.
+	doc2 := "---\nname: t\nmetadata:\n  keep: \"1\"\nother:\n  upkeep-pins: \"author-owned\"\n---\n# T\n"
+	if tg, _, _ := DriftTargets([]byte(doc2), sc); len(tg) != 0 {
+		t.Errorf("targets for an out-of-scope key = %v, want none", tg)
+	}
+	out2, err := Build([]byte(doc2), sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out2), "upkeep-pins: \"author-owned\"") {
+		t.Errorf("author-owned key under another object was touched:\n%s", out2)
+	}
+}
+
+// M1 regression: values written with %q are unquoted by the drift reader,
+// so a value needing escaping reaches a fixed point with no DRIFT.
+func TestOwnedKeyUnquoteFixedPoint(t *testing.T) {
+	doc := "---\nname: t\nmetadata:\n  upkeep-pins: \"weird\\\"pkg=1.0.0\"\n---\n# T\n"
+	sc := &Sidecar{Schema: 1, Pins: map[string]PinData{
+		`weird"pkg`: {Kind: "npm", VerifiedFor: "1.0.0"},
+	}}
+	tg, mErr, err := DriftTargets([]byte(doc), sc)
+	if err != nil || mErr != nil {
+		t.Fatal(err, mErr)
+	}
+	if len(tg) != 0 {
+		t.Errorf("targets = %v, want none (unquoted comparison must match %q)", tg, "weird\"pkg")
+	}
+}
+
+// M1 regression: a repo string carrying --> is rejected and nothing is
+// written.
+func TestRepoMarkerRejected(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, SkillName), []byte(skillWithRegions), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sc := testSidecar()
+	sc.Pins["@anthropic-ai/claude-code"] = PinData{
+		Kind:        "github",
+		Repo:        "owner/name --> injected",
+		VerifiedFor: "2.1.310",
+	}
+	if err := os.WriteFile(filepath.Join(dir, SidecarName), sc.Canonical(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Build([]byte(skillWithRegions), sc); err == nil {
+		t.Fatal("repo with --> must be rejected")
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, SkillName))
+	if string(got) != skillWithRegions {
+		t.Error("SKILL.md changed despite validation failure")
+	}
+}
+
+// A1/M3 regression: a symlinked SKILL.md survives a render; the target
+// file gets the new bytes.
+func TestWriteFileAtomicSymlinkSurvives(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.md")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, SkillName)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(link, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("symlink was replaced by a regular file")
+	}
+	got, err := os.ReadFile(link) // follows the symlink
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new" {
+		t.Errorf("target bytes = %q, want new", got)
+	}
+}
+
+// A2 regression: the 120-character limit counts runes.
+func TestValidateFieldRunes(t *testing.T) {
+	if err := validateField("old", strings.Repeat("é", 120)); err != nil {
+		t.Errorf("120 runes should pass: %v", err)
+	}
+	if err := validateField("old", strings.Repeat("é", 121)); err == nil {
+		t.Error("121 runes must fail")
+	}
+}
+
+// L1 regression: DriftTargets separates malformed markers from hard
+// errors.
+func TestDriftTargetsMarkerErr(t *testing.T) {
+	doc := "# t\n\n<!-- generated:pins -->\nbody never closed\n"
+	tg, markerErr, err := DriftTargets([]byte(doc), testSidecar())
+	if err != nil {
+		t.Fatalf("marker problems are not hard errors: %v", err)
+	}
+	if markerErr == nil {
+		t.Fatal("expected markerErr for an unclosed region")
+	}
+	if len(tg) != 0 {
+		t.Errorf("targets = %v, want none", tg)
 	}
 }
