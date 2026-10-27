@@ -41,23 +41,15 @@ var renderCmd = &cobra.Command{
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), string(b))
-		} else {
-			if result.Changed && result.Diff != "" {
-				fmt.Fprint(cmd.OutOrStdout(), result.Diff)
-			}
-			if renderCheck {
-				if result.Changed {
-					fmt.Fprintln(cmd.OutOrStdout(), "VERDICT: DRIFT — SKILL.md differs from upkeep.data.json (run: upkeep render)")
-					os.Exit(1)
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), "VERDICT: UNCHANGED — output matches upkeep.data.json")
-				return nil
-			}
-			if result.Changed {
-				fmt.Fprintln(cmd.OutOrStdout(), "VERDICT: RENDERED — SKILL.md rewritten from upkeep.data.json")
-			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "VERDICT: UNCHANGED — output matches upkeep.data.json")
-			}
+			return nil
+		}
+		if result.Changed && result.Diff != "" {
+			fmt.Fprint(cmd.OutOrStdout(), result.Diff)
+		}
+		line, exit := renderVerdict(result, renderCheck)
+		fmt.Fprintln(cmd.OutOrStdout(), line)
+		if exit != 0 {
+			os.Exit(exit)
 		}
 		return nil
 	},
@@ -80,4 +72,17 @@ func missingSkill(err error) bool {
 		return os.IsNotExist(ee.Err)
 	}
 	return false
+}
+
+// renderVerdict maps a render result to its human verdict line and process
+// exit code. In --check mode drift exits 1 without writing anything.
+func renderVerdict(r *engine.RenderResult, checkMode bool) (string, int) {
+	switch {
+	case checkMode && r.Changed:
+		return "VERDICT: DRIFT — SKILL.md differs from upkeep.data.json (run: upkeep render)", 1
+	case r.Changed:
+		return "VERDICT: RENDERED — SKILL.md rewritten from upkeep.data.json", 0
+	default:
+		return "VERDICT: UNCHANGED — output matches upkeep.data.json", 0
+	}
 }
