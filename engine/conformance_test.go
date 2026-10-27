@@ -174,6 +174,9 @@ func conformanceCases() []conformanceCase {
 		{"ahead-pin", "ahead-pin", "FRESH", false, ""},
 		{"sha-pin-fresh", "sha-pin-fresh", "FRESH", false, ""},
 		{"sha-pin-stale", "sha-pin-stale", "STALE", true, ""},
+		// M-4: a GitHub tag pin (no sidecar) covers the tag-ordering
+		// comparison (git stub tags v1.0.0 and v2.0.0, pinned at 1.0.0).
+		{"github-tag-pin", "github-tag-pin", "STALE", true, "STALE    pin:gh-tags"},
 		{"unresolved-pin", "unresolved-pin", "FRESH", false, ""},
 		{"tampered", "tampered", "TAMPERED", true, ""},
 		{"unstamped", "unstamped", "TAMPERED", true, ""},

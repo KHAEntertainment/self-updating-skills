@@ -232,15 +232,15 @@ func TestRenderSanitizationFailureWritesNothing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	dir, skPath, _, _, _ := retrofittedSkill(t)
-	// A hostile sidecar: a redirect row with a line break and a non-https
-	// source. Validation must fail before any write.
+	// A hostile sidecar: a redirect row with a line break. Validation
+	// must fail before any write. Each bad field gets its own isolated
+	// sidecar so no row can mask a later one.
 	sc, err := render.LoadSidecar(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sc.Redirects = []render.Redirect{
 		{ID: "bad", Old: "a\nb", New: "c"},
-		{ID: "bad2", Old: "x", New: "y", Source: "http://evil.example/"},
 	}
 	if err := os.WriteFile(filepath.Join(dir, render.SidecarName), sc.Canonical(), 0o644); err != nil {
 		t.Fatal(err)
@@ -252,6 +252,29 @@ func TestRenderSanitizationFailureWritesNothing(t *testing.T) {
 	after, _ := os.ReadFile(skPath)
 	if string(after) != string(before) {
 		t.Error("SKILL.md changed despite validation failure")
+	}
+
+	// B3: an isolated http-only source row must be rejected on its own —
+	// https is required (sanitization rule 2).
+	sc2, err := render.LoadSidecar(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc2.Redirects = []render.Redirect{{ID: "badhttp", Old: "x", New: "y", Source: "http://evil.example/"}}
+	if err := os.WriteFile(filepath.Join(dir, render.SidecarName), sc2.Canonical(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeSidecar, _ := os.ReadFile(filepath.Join(dir, render.SidecarName))
+	if _, err := engine.Render(ctx, dir, false); err == nil {
+		t.Fatal("expected http-source validation error")
+	}
+	after2, _ := os.ReadFile(skPath)
+	if string(after2) != string(before) {
+		t.Error("SKILL.md changed despite http-source validation failure")
+	}
+	afterSidecar, _ := os.ReadFile(filepath.Join(dir, render.SidecarName))
+	if string(afterSidecar) != string(beforeSidecar) {
+		t.Error("sidecar changed despite http-source validation failure")
 	}
 }
 

@@ -180,9 +180,10 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 
 	// DRIFT: with a sidecar, a generated region or renderer-owned
 	// frontmatter key that differs from what the renderer would produce.
-	// Malformed generated markers are also DRIFT items with a precise
-	// message — check always prints a VERDICT line — but render refuses
-	// such files, so the message never prescribes `upkeep render`.
+	// Malformed generated markers and a malformed sidecar are also DRIFT
+	// items with a precise message — check always prints a VERDICT line —
+	// but render and stamp refuse such files, so the messages never
+	// prescribe `upkeep render`.
 	drift := 0
 	if sc != nil {
 		raw, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
@@ -191,15 +192,19 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		}
 		targets, markerErr, err := render.DriftTargets(raw, sc)
 		if err != nil {
-			return Report{}, err
-		}
-		if markerErr != nil {
+			// Sidecar validation failure: same treatment as a malformed
+			// sidecar load — an item, not a hard error.
 			drift++
-			items = append(items, Item{Kind: "DRIFT", Line: fmt.Sprintf("DRIFT    region (SKILL.md)  %v (upkeep render refuses this file; repair the markers)", markerErr)})
-		}
-		for _, tg := range targets {
-			drift++
-			items = append(items, Item{Kind: "DRIFT", Line: fmt.Sprintf("DRIFT    %s (SKILL.md)  differs from upkeep.data.json — run: upkeep render", tg)})
+			items = append(items, Item{Kind: "DRIFT", Line: fmt.Sprintf("DRIFT    sidecar (upkeep.data.json)  %v — repair the sidecar; render and stamp refuse to run", err)})
+		} else {
+			if markerErr != nil {
+				drift++
+				items = append(items, Item{Kind: "DRIFT", Line: fmt.Sprintf("DRIFT    region (SKILL.md)  %v (upkeep render refuses this file; repair the markers)", markerErr)})
+			}
+			for _, tg := range targets {
+				drift++
+				items = append(items, Item{Kind: "DRIFT", Line: fmt.Sprintf("DRIFT    %s (SKILL.md)  differs from upkeep.data.json — run: upkeep render", tg)})
+			}
 		}
 	}
 

@@ -84,7 +84,16 @@ func CheckWithThreshold(ctx context.Context, dir string, threshold *int) (*Check
 	cfg := skill.ParseFrontmatter(sk)
 	sc, err := render.LoadSidecar(abs)
 	if err != nil {
-		return nil, &Error{Op: "read", Path: filepath.Join(abs, render.SidecarName), Err: err}
+		// A malformed sidecar (unknown keys, bad schema, invalid fields)
+		// must not blank the gate line: check reports it as a DRIFT item
+		// with the error and the overall STALE verdict, so a delegated
+		// scripts/upkeep.sh check never injects an empty VERDICT line.
+		// render and stamp keep refusing to run.
+		return &CheckReport{
+			Verdict: "STALE",
+			Summary: "drift=1",
+			Items:   []Item{{Kind: "DRIFT", Line: fmt.Sprintf("DRIFT    sidecar (upkeep.data.json)  %v — repair the sidecar; render and stamp refuse to run", err)}},
+		}, nil
 	}
 	r, err := check.Compute(ctx, cfg, threshold, abs, sc)
 	if err != nil {

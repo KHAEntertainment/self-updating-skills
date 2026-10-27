@@ -3,11 +3,14 @@ package engine_test
 import "strings"
 
 // mapGoLines normalizes Go-only verdict and item-kind tokens to their shell
-// script equivalents for conformance comparison. Per decision P1 the frozen
-// script shows STALE exactly where the Go engine shows CONTENT-LAG, so the
-// CONTENT-LAG pin item and verdict line map onto their STALE counterparts
-// (the suffix text is identical by construction). Every other line must be
-// byte-identical.
+// script equivalents for conformance comparison. There are two documented
+// Go-only classes (the script never reads sidecars): CONTENT-LAG maps to
+// STALE per decision P1 — the CONTENT-LAG pin item and verdict line map
+// onto their STALE counterparts, with the suffix text identical by
+// construction — and DRIFT items make Go's verdict STALE where the script
+// reports FRESH, which the fixture matrix avoids by never giving a
+// script-compared fixture a drifting sidecar state. Every other line must
+// be byte-identical.
 //
 // This is the one comparator shared by the fixture conformance test and the
 // UPKEEP_LIVE=1 repo-skills test.

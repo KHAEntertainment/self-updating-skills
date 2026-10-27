@@ -207,8 +207,17 @@ func TestMalformedSidecarRefusesMutations(t *testing.T) {
 			if _, err := engine.Stamp(ctx, dir); err == nil {
 				t.Error("stamp must fail on a malformed sidecar")
 			}
-			if _, err := engine.Check(ctx, dir); err == nil {
-				t.Error("check must fail on a malformed sidecar")
+			// L-4: check never blanks the gate line — the malformed sidecar
+			// is a DRIFT item with the overall STALE verdict.
+			r, err := engine.Check(ctx, dir)
+			if err != nil {
+				t.Fatalf("check must report, not error: %v", err)
+			}
+			if r.Verdict != "STALE" {
+				t.Errorf("verdict = %q, want STALE", r.Verdict)
+			}
+			if !strings.Contains(engine.RenderText(r), "VERDICT: STALE") || !strings.Contains(engine.RenderText(r), "upkeep.data.json") {
+				t.Errorf("check output must print a VERDICT line naming the sidecar: %q", engine.RenderText(r))
 			}
 			got, _ := os.ReadFile(skPath)
 			if string(got) != doc {
@@ -224,5 +233,72 @@ func TestMalformedSidecarRefusesMutations(t *testing.T) {
 	// The committed retrofit sidecar still loads.
 	if _, err := render.LoadSidecar(filepath.Join(root, "skills", "claude-code-authoring")); err != nil {
 		t.Errorf("committed retrofit sidecar must load: %v", err)
+	}
+}
+
+// D2 regression: a YAML single-quoted owned value decodes as YAML does
+// (” is a literal quote), so a matching sidecar reads FRESH with no
+// DRIFT — before any render.
+func TestCheckSingleQuotedOwnedValue(t *testing.T) {
+	setupStubPath(t)
+	dir := t.TempDir()
+	doc := "---\nname: t\nmetadata:\n  upkeep-pins: 'fresh-pkg=1.2.3'\n---\n\n# T\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := "{\n  \"schema\": 1,\n  \"pins\": {\n    \"fresh-pkg\": {\n      \"kind\": \"npm\",\n      \"verified_for\": \"1.2.3\"\n    }\n  }\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "upkeep.data.json"), []byte(sidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r, err := engine.Check(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Verdict != "FRESH" {
+		t.Errorf("verdict = %q, want FRESH (single-quoted value must decode)", r.Verdict)
+	}
+	for _, it := range r.Items {
+		if it.Kind == "DRIFT" {
+			t.Errorf("unexpected DRIFT for a single-quoted matching value: %s", it.Line)
+		}
+	}
+}
+
+// Duplicate owned keys: check shows a DRIFT item plus a VERDICT line;
+// render refuses and writes nothing.
+func TestCheckDuplicateOwnedKeysVerdict(t *testing.T) {
+	setupStubPath(t)
+	dir := t.TempDir()
+	doc := "---\nname: t\nmetadata:\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n---\n\n# T\n"
+	sk := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(sk, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := "{\n  \"schema\": 1,\n  \"pins\": {\n    \"fresh-pkg\": {\n      \"kind\": \"npm\",\n      \"verified_for\": \"1.2.3\"\n    }\n  }\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "upkeep.data.json"), []byte(sidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r, err := engine.Check(ctx, dir)
+	if err != nil {
+		t.Fatalf("check must report, not error: %v", err)
+	}
+	if r.Verdict != "STALE" {
+		t.Errorf("verdict = %q, want STALE", r.Verdict)
+	}
+	if !strings.Contains(engine.RenderText(r), "VERDICT: STALE") || !strings.Contains(engine.RenderText(r), "upkeep-pins") {
+		t.Errorf("check output must print a VERDICT line naming the duplicate: %q", engine.RenderText(r))
+	}
+	if _, err := engine.Render(ctx, dir, false); err == nil {
+		t.Error("render must refuse duplicate owned keys")
+	}
+	got, _ := os.ReadFile(sk)
+	if string(got) != doc {
+		t.Error("SKILL.md changed despite the duplicate-key refusal")
 	}
 }
