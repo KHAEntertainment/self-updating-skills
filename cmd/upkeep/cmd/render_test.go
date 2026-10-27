@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,5 +85,42 @@ func TestRenderVerdictRules(t *testing.T) {
 			t.Errorf("renderVerdict(%v, %v) = (%q, %d), want line containing %q and exit %d",
 				tc.changed, tc.check, line, exit, tc.wantLine, tc.wantExit)
 		}
+	}
+}
+
+// R6 regression: `render --check --json` must exit 1 on drift, exactly
+// like the text output. Runs the built binary as a process to observe the
+// exit code.
+func TestRenderCheckJSONExitCode(t *testing.T) {
+	dir := renderFixture(t)
+	bin := filepath.Join(t.TempDir(), "upkeep")
+	build := exec.Command("go", "build", "-o", bin, repoRoot(t)+"/cmd/upkeep")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build upkeep: %v\n%s", err, out)
+	}
+	cmd := exec.Command(bin, "render", "--check", "--json", dir)
+	out, err := cmd.Output()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+		err = nil
+	}
+	if err != nil {
+		t.Fatalf("run render --check --json: %v", err)
+	}
+	if code != 1 {
+		t.Errorf("exit = %d, want 1 (JSON output must not bypass the check exit rule); output: %s", code, out)
+	}
+	if !strings.Contains(string(out), `"changed": true`) {
+		t.Errorf("output = %q, want changed true", out)
+	}
+	// No-drift case exits 0: repair first (--check never writes), then
+	// check again.
+	if out, err := exec.Command(bin, "render", dir).CombinedOutput(); err != nil {
+		t.Fatalf("repair render: %v\n%s", err, out)
+	}
+	cmd2 := exec.Command(bin, "render", "--check", "--json", dir)
+	if err := cmd2.Run(); err != nil {
+		t.Errorf("run after repair should exit 0: %v", err)
 	}
 }

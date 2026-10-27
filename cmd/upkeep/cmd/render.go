@@ -41,6 +41,11 @@ var renderCmd = &cobra.Command{
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), string(b))
+			// The exit rule is format-independent: --check --json exits 1
+			// on drift exactly like the text output.
+			if exit := renderExitCode(result, renderCheck); exit != 0 {
+				os.Exit(exit)
+			}
 			return nil
 		}
 		if result.Changed && result.Diff != "" {
@@ -85,4 +90,13 @@ func renderVerdict(r *engine.RenderResult, checkMode bool) (string, int) {
 	default:
 		return "VERDICT: UNCHANGED — output matches upkeep.data.json", 0
 	}
+}
+
+// renderExitCode is the exit rule for a render result, shared by every
+// output format: in --check mode drift exits 1.
+func renderExitCode(r *engine.RenderResult, checkMode bool) int {
+	if checkMode && r.Changed {
+		return 1
+	}
+	return 0
 }
