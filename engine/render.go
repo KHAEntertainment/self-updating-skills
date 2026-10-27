@@ -120,6 +120,13 @@ func Stamp(ctx context.Context, dir string) (*StampResult, error) {
 	if _, err := os.Stat(sk); err != nil {
 		return nil, &Error{Op: "stat", Path: sk, Err: err}
 	}
+	// A malformed sidecar (unknown keys, bad schema) makes every mutating
+	// command refuse to run: stamp rewrites SKILL.md, so it must not
+	// operate on a skill in an unknown data state. A missing sidecar is
+	// fine (nil, nil).
+	if _, err := render.LoadSidecar(abs); err != nil {
+		return nil, &Error{Op: "read", Path: filepath.Join(abs, render.SidecarName), Err: err}
+	}
 	blocks, err := skill.ScanFrozenBlocks(abs)
 	if err != nil {
 		var re *skill.ReadError

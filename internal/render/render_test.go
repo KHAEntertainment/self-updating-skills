@@ -770,3 +770,41 @@ func TestDriftTargetsMarkerErr(t *testing.T) {
 		t.Errorf("targets = %v, want none", tg)
 	}
 }
+
+// CR2 regression: unknown sidecar keys at any nesting level, and any
+// schema other than 1, are rejected by name — they can never be silently
+// rewritten away (Canonical() would drop undeclared keys).
+func TestLoadSidecarStrictDecoding(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, SidecarName)
+	write := func(content string) {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Unknown top-level key.
+	write(`{"schema": 1, "owner": "ci", "future_key": "x"}`)
+	if _, err := LoadSidecar(dir); err == nil || !strings.Contains(err.Error(), "future_key") {
+		t.Errorf("unknown top-level key: err = %v, want it named", err)
+	}
+	// Unknown key inside a pin entry.
+	write(`{"schema": 1, "pins": {"p": {"verified_for": "1.0", "extra": true}}}`)
+	if _, err := LoadSidecar(dir); err == nil || !strings.Contains(err.Error(), "extra") {
+		t.Errorf("unknown pin-entry key: err = %v, want it named", err)
+	}
+	// Unknown key inside a redirect entry.
+	write(`{"schema": 1, "redirects": [{"id": "r", "old": "a", "new": "b", "oops": 1}]}`)
+	if _, err := LoadSidecar(dir); err == nil || !strings.Contains(err.Error(), "oops") {
+		t.Errorf("unknown redirect-entry key: err = %v, want it named", err)
+	}
+	// Schema 2.
+	write(`{"schema": 2}`)
+	if _, err := LoadSidecar(dir); err == nil || !strings.Contains(err.Error(), "schema") {
+		t.Errorf("schema 2: err = %v, want it named", err)
+	}
+	// Trailing garbage.
+	write(`{"schema": 1} trailing`)
+	if _, err := LoadSidecar(dir); err == nil {
+		t.Error("trailing data must be rejected")
+	}
+}

@@ -6,6 +6,7 @@ package render
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -55,19 +56,29 @@ type Sidecar struct {
 }
 
 // LoadSidecar reads the sidecar in dir. A missing file returns (nil, nil):
-// the skill then has no sidecar and Phase 1 behaviour applies exactly.
+// the skill then has no sidecar and Phase 1 behaviour applies exactly. A
+// present sidecar is decoded strictly — unknown keys at any nesting level
+// and any schema other than 1 are rejected with an error naming the
+// problem — so a malformed sidecar can never be silently rewritten
+// (Canonical() would drop undeclared keys, which is data loss).
 func LoadSidecar(dir string) (*Sidecar, error) {
 	path := filepath.Join(dir, SidecarName)
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	defer f.Close()
 	var sc Sidecar
-	if err := json.Unmarshal(raw, &sc); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", SidecarName, err)
+	dec := json.NewDecoder(f)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&sc); err != nil {
+		return nil, fmt.Errorf("%s: %w", SidecarName, err)
+	}
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		return nil, fmt.Errorf("%s: unexpected trailing data", SidecarName)
 	}
 	if sc.Schema != 1 {
 		return nil, fmt.Errorf("%s: unsupported schema %d (want 1)", SidecarName, sc.Schema)

@@ -3,7 +3,7 @@
 ## Completed
 - Initial self-updating-skills framework and harness authoring suite, v0.1.0 (commit `fa7e499`, 2026-10-24)
 - Skill Engine Phase 1: Go `check` port with verdicts identical to `upkeep.sh` (PR #8, merged 2026-10-26; conformance matrix, cobra CLI `upkeep check`, SQLite migration runner)
-- Skill Engine Phase 2: generated regions, `upkeep.data.json` sidecar and lossless render (PR pending, 2026-10-27; `engine.Render`/`upkeep render [--check]`, `upkeep stamp` in Go, `DRIFT`/`CONTENT-LAG` verdicts with the Go `CONTENT-LAG` ↔ script `STALE` mapping, `claude-code-authoring` retrofitted as the proof skill)
+- Skill Engine Phase 2: generated regions, `upkeep.data.json` sidecar and lossless render (PR pending, 2026-10-27; `engine.Render`/`upkeep render [--check]`, `upkeep stamp` in Go, `DRIFT` check items (each forcing the overall verdict `STALE`) and the separate `CONTENT-LAG` overall verdict, with the Go `CONTENT-LAG` ↔ script `STALE` mapping, `claude-code-authoring` retrofitted as the proof skill)
 - Go `stamp` keeps CRLF line endings by design (the Python stamp normalizes to LF); stdout and frozen digests stay identical between the two
 
 ## Known Tech Debt
