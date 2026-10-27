@@ -43,8 +43,11 @@ type DateItem struct {
 // Compute runs the full check logic for a skill directory. threshold
 // overrides the frontmatter freshness threshold when non-nil. sc is the
 // skill's upkeep.data.json sidecar, or nil when the skill has none: with
-// no sidecar the behaviour is byte-identical to Phase 1.
-func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir string, sc *render.Sidecar) (Report, error) {
+// no sidecar the behaviour is byte-identical to Phase 1. sidecarErr (with
+// sc == nil) reports a sidecar that failed to decode: the computation runs
+// normally and the error is appended as a DRIFT item, so every other
+// finding — TAMPERED included — keeps its natural verdict precedence.
+func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir string, sc *render.Sidecar, sidecarErr error) (Report, error) {
 	thr := cfg.ThresholdDays
 	if threshold != nil {
 		thr = *threshold
@@ -185,6 +188,12 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 	// but render and stamp refuse such files, so the messages never
 	// prescribe `upkeep render`.
 	drift := 0
+	if sidecarErr != nil {
+		// The sidecar could not be decoded: run every other check and
+		// carry the decode problem as a DRIFT item.
+		drift++
+		items = append(items, Item{Kind: "DRIFT", Line: fmt.Sprintf("DRIFT    sidecar (upkeep.data.json)  %v — repair the sidecar; render and stamp refuse to run", sidecarErr)})
+	}
 	if sc != nil {
 		raw, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
 		if err != nil {

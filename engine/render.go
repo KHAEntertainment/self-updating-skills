@@ -61,6 +61,11 @@ func Render(ctx context.Context, dir string, dryRun bool) (*RenderResult, error)
 	if err != nil {
 		return nil, &Error{Op: "read", Path: sk, Err: err}
 	}
+	// Shared owned-key preflight (F2): duplicate renderer-owned keys are
+	// refused here too, with the same error shape stamp produces.
+	if err := skill.OwnedKeyDuplicate(raw); err != nil {
+		return nil, &Error{Op: "render", Path: sk, Err: err}
+	}
 	out, err := render.Build(raw, sc)
 	if err != nil {
 		return nil, &Error{Op: "render", Path: sk, Err: err}
@@ -124,8 +129,21 @@ func Stamp(ctx context.Context, dir string) (*StampResult, error) {
 	// command refuse to run: stamp rewrites SKILL.md, so it must not
 	// operate on a skill in an unknown data state. A missing sidecar is
 	// fine (nil, nil).
-	if _, err := render.LoadSidecar(abs); err != nil {
+	sc, err := render.LoadSidecar(abs)
+	if err != nil {
 		return nil, &Error{Op: "read", Path: filepath.Join(abs, render.SidecarName), Err: err}
+	}
+	raw, err := os.ReadFile(sk)
+	if err != nil {
+		return nil, &Error{Op: "read", Path: sk, Err: err}
+	}
+	// Shared owned-key preflight (F2): with a sidecar, duplicate
+	// upkeep-pins/upkeep-verified lines make stamp refuse exactly like
+	// render, before any write.
+	if sc != nil {
+		if err := skill.OwnedKeyDuplicate(raw); err != nil {
+			return nil, &Error{Op: "stamp", Path: sk, Err: err}
+		}
 	}
 	blocks, err := skill.ScanFrozenBlocks(abs)
 	if err != nil {
@@ -139,10 +157,6 @@ func Stamp(ctx context.Context, dir string) (*StampResult, error) {
 		return &StampResult{Lines: []string{
 			fmt.Sprintf("VERDICT: NONE — no <!-- frozen:id --> blocks found in %s", abs),
 		}}, nil
-	}
-	raw, err := os.ReadFile(sk)
-	if err != nil {
-		return nil, &Error{Op: "read", Path: sk, Err: err}
 	}
 	keys := make([]skill.FlatKey, 0, len(blocks))
 	for _, b := range blocks {

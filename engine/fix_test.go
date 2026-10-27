@@ -302,3 +302,114 @@ func TestCheckDuplicateOwnedKeysVerdict(t *testing.T) {
 		t.Error("SKILL.md changed despite the duplicate-key refusal")
 	}
 }
+
+// F1 regression: a malformed sidecar must not hide a tampered frozen
+// block — check runs the full computation and carries the sidecar problem
+// as a DRIFT item, so TAMPERED keeps its precedence.
+func TestCheckMalformedSidecarKeepsTampered(t *testing.T) {
+	dir := t.TempDir()
+	doc := "---\nname: t\nmetadata:\n  author: x\n---\n\n# T\n\n<!-- frozen:policy -->\nOWNER POLICY\n<!-- /frozen:policy -->\n"
+	sk := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(sk, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	validSidecar := "{\n  \"schema\": 1\n}\n"
+	scPath := filepath.Join(dir, "upkeep.data.json")
+	if err := os.WriteFile(scPath, []byte(validSidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// Stamp, then tamper the frozen body.
+	if _, err := engine.Stamp(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
+	stamped, err := os.ReadFile(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := strings.Replace(string(stamped), "OWNER POLICY", "EDITED OWNER POLICY", 1)
+	if err := os.WriteFile(sk, []byte(tampered), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, bad := range map[string]string{
+		"unknown-key": "{\n  \"schema\": 1,\n  \"oops\": true\n}\n",
+		"schema-2":    "{\n  \"schema\": 2\n}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(scPath, []byte(bad), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			r, err := engine.Check(ctx, dir)
+			if err != nil {
+				t.Fatalf("check must report, not error: %v", err)
+			}
+			if r.Verdict != "TAMPERED" {
+				t.Errorf("verdict = %q, want TAMPERED (sidecar failure must not hide it)", r.Verdict)
+			}
+			out := engine.RenderText(r)
+			if !strings.Contains(out, "TAMPERED  frozen:policy") {
+				t.Errorf("frozen item missing:\n%s", out)
+			}
+			if !strings.Contains(out, "upkeep.data.json") {
+				t.Errorf("sidecar DRIFT item missing:\n%s", out)
+			}
+			// Same strict exit as the valid-sidecar tampered case.
+			if goStrictExit(r) != 1 {
+				t.Error("strict exit must be 1, like the valid-sidecar TAMPERED case")
+			}
+		})
+	}
+
+	// Control: the same malformed sidecar without tampering stays STALE.
+	if err := os.WriteFile(scPath, []byte("{\n  \"schema\": 2\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sk, []byte(stamped), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := engine.Check(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Verdict != "STALE" {
+		t.Errorf("control verdict = %q, want STALE", r.Verdict)
+	}
+	if !strings.Contains(engine.RenderText(r), "VERDICT: STALE") {
+		t.Error("control must still print a VERDICT line")
+	}
+}
+
+// F2 regression: stamp refuses duplicate renderer-owned keys, exactly like
+// render, and writes nothing.
+func TestStampRefusesDuplicateOwnedKeys(t *testing.T) {
+	dir := t.TempDir()
+	doc := "---\nname: t\nmetadata:\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n---\n\n# T\n\n<!-- frozen:pol -->\nf\n<!-- /frozen:pol -->\n"
+	sk := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(sk, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := "{\n  \"schema\": 1,\n  \"pins\": {\n    \"fresh-pkg\": {\n      \"kind\": \"npm\",\n      \"verified_for\": \"1.2.3\"\n    }\n  }\n}\n"
+	scPath := filepath.Join(dir, "upkeep.data.json")
+	if err := os.WriteFile(scPath, []byte(sidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := engine.Stamp(ctx, dir); err == nil {
+		t.Fatal("stamp must refuse duplicate renderer-owned keys")
+	} else if !strings.Contains(err.Error(), "upkeep-pins") {
+		t.Errorf("error must name the duplicate key: %v", err)
+	}
+	got, _ := os.ReadFile(sk)
+	if string(got) != doc {
+		t.Error("SKILL.md changed despite the refusal")
+	}
+	gotSc, _ := os.ReadFile(scPath)
+	if string(gotSc) != sidecar {
+		t.Error("sidecar changed despite the refusal")
+	}
+}
