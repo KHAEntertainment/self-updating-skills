@@ -166,6 +166,11 @@ func conformanceCases() []conformanceCase {
 		// is ahead of verified_for: Go says CONTENT-LAG, the script says
 		// STALE — the P1 mapping handled by mapGoLines.
 		{"content-lag", "content-lag", "CONTENT-LAG", true, "CONTENT-LAG pin:stale-pkg"},
+		// H1: an unresolved live lookup reports UNKNOWN even with a
+		// sidecar recording a newer latest_seen — no substitution, so Go
+		// and the script agree line for line (verdict FRESH, like the
+		// script's unresolved-pin case).
+		{"sidecar-unresolved", "sidecar-unresolved", "FRESH", false, "UNKNOWN  pin:unres-pkg"},
 		{"ahead-pin", "ahead-pin", "FRESH", false, ""},
 		{"sha-pin-fresh", "sha-pin-fresh", "FRESH", false, ""},
 		{"sha-pin-stale", "sha-pin-stale", "STALE", true, ""},

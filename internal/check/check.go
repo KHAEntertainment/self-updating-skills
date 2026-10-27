@@ -62,27 +62,10 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 			continue
 		}
 		cur := source.ResolveCurrent(ctx, pin)
-		// The live lookup stays authoritative; the sidecar's latest_seen is
-		// the newest recorded upstream version (data-and-rendering "Field
-		// rules": it changes on every poll that finds something new), so the
-		// comparison current is the newer of the two. Where the pinned
-		// version (verified_for, P1) is behind it, a sidecar-backed pin
-		// reports CONTENT-LAG instead of STALE (D7).
-		var sd *render.PinData
-		if sc != nil {
-			if p, ok := sc.Pins[pin.Name]; ok {
-				sd = &p
-			}
-		}
-		eff := cur
-		if sd != nil && sd.LatestSeen != "" {
-			if eff == "" {
-				eff = sd.LatestSeen
-			} else if pin.Kind != "github" && source.VerCmp(sd.LatestSeen, eff) > 0 {
-				eff = sd.LatestSeen
-			}
-		}
-		if eff == "" {
+		// An unresolved live lookup reports UNKNOWN exactly like the script:
+		// latest_seen is never substituted for it (parity with the frozen
+		// fallback wins in this case).
+		if cur == "" {
 			pinned := pin.Version
 			if pinned == "" {
 				pinned = "?"
@@ -90,7 +73,25 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 			items = append(items, Item{Kind: "UNKNOWN", Line: fmt.Sprintf("UNKNOWN  pin:%s  (pinned %s — current unresolved)", pin.Name, pinned)})
 			continue
 		}
+		// The live lookup stays authoritative; the sidecar's latest_seen is
+		// the newest recorded upstream version (data-and-rendering "Field
+		// rules": it changes on every poll that finds something new), so the
+		// comparison current is the newer of the two. Where the pinned
+		// version (verified_for, P1) is behind it, a sidecar-backed pin
+		// reports CONTENT-LAG instead of STALE (D7). GitHub tag pins join
+		// this comparison; only SHA pins keep the identity comparison (a
+		// SHA has no version order, and the live HEAD is authoritative).
+		var sd *render.PinData
+		if sc != nil {
+			if p, ok := sc.Pins[pin.Name]; ok {
+				sd = &p
+			}
+		}
 		isSHA := pin.Kind == "github" && isSha(pin.Version)
+		eff := cur
+		if sd != nil && sd.LatestSeen != "" && !isSHA && source.VerCmp(sd.LatestSeen, eff) > 0 {
+			eff = sd.LatestSeen
+		}
 		if isSHA {
 			if strings.EqualFold(pin.Version, eff) {
 				items = append(items, Item{Kind: "FRESH", Line: fmt.Sprintf("FRESH    pin:%s  %s", pin.Name, eff)})
@@ -179,15 +180,22 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 
 	// DRIFT: with a sidecar, a generated region or renderer-owned
 	// frontmatter key that differs from what the renderer would produce.
+	// Malformed generated markers are also DRIFT items with a precise
+	// message — check always prints a VERDICT line — but render refuses
+	// such files, so the message never prescribes `upkeep render`.
 	drift := 0
 	if sc != nil {
 		raw, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
 		if err != nil {
 			return Report{}, &skill.ReadError{Path: filepath.Join(skillDir, "SKILL.md"), Err: err}
 		}
-		targets, err := render.DriftTargets(raw, sc)
+		targets, markerErr, err := render.DriftTargets(raw, sc)
 		if err != nil {
 			return Report{}, err
+		}
+		if markerErr != nil {
+			drift++
+			items = append(items, Item{Kind: "DRIFT", Line: fmt.Sprintf("DRIFT    region (SKILL.md)  %v (upkeep render refuses this file; repair the markers)", markerErr)})
 		}
 		for _, tg := range targets {
 			drift++
