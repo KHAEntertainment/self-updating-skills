@@ -537,3 +537,44 @@ func TestRenderFuzzDecoyAndCRLFStability(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildEmptySidecar(t *testing.T) {
+	sc := &Sidecar{Schema: 1}
+	out, err := Build([]byte(skillWithRegions), sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	// No pins: header-only tables and an empty (blank-line) freshness body.
+	if !strings.Contains(s, "| package | verified for | latest seen | checked |\n| --- | --- | --- | --- |\n<!-- /generated:pins -->") {
+		t.Errorf("header-only pins table expected:\n%s", s)
+	}
+	if !strings.Contains(s, "<!-- generated:freshness -->\n\n<!-- /generated:freshness -->") {
+		t.Errorf("empty freshness body expected:\n%s", s)
+	}
+	// No sidecar data: the renderer-owned keys are removed from the
+	// frontmatter, while the author-owned version key stays.
+	if strings.Contains(s, "upkeep-pins") || strings.Contains(s, "upkeep-verified") {
+		t.Errorf("unbacked owned keys were not removed:\n%s", s)
+	}
+	if !strings.Contains(s, `version: "1.0.0"`) {
+		t.Errorf("author frontmatter key was removed:\n%s", s)
+	}
+}
+
+func TestValidateFieldBoundary(t *testing.T) {
+	ok := strings.Repeat("x", 120)
+	if err := validateField("old", ok); err != nil {
+		t.Errorf("120 chars should pass: %v", err)
+	}
+	if err := validateField("old", ok+"x"); err == nil {
+		t.Error("121 chars must fail")
+	}
+}
+
+func TestDiffNoTrailingNewlineInputs(t *testing.T) {
+	d := Diff("a\nb", "a\nc")
+	if !strings.Contains(d, "-b") || !strings.Contains(d, "+c") {
+		t.Errorf("diff without trailing newlines broken:\n%s", d)
+	}
+}
