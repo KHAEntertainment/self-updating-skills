@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/KHAEntertainment/self-updating-skills/internal/render"
 	"github.com/KHAEntertainment/self-updating-skills/internal/skill"
 	"github.com/KHAEntertainment/self-updating-skills/internal/source"
 )
@@ -40,8 +41,10 @@ type DateItem struct {
 }
 
 // Compute runs the full check logic for a skill directory. threshold
-// overrides the frontmatter freshness threshold when non-nil.
-func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir string) (Report, error) {
+// overrides the frontmatter freshness threshold when non-nil. sc is the
+// skill's upkeep.data.json sidecar, or nil when the skill has none: with
+// no sidecar the behaviour is byte-identical to Phase 1.
+func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir string, sc *render.Sidecar) (Report, error) {
 	thr := cfg.ThresholdDays
 	if threshold != nil {
 		thr = *threshold
@@ -49,7 +52,7 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 	today := dayNumber(time.Now())
 
 	var items []Item
-	totalPins, manualPins, stalePins := 0, 0, 0
+	totalPins, manualPins, stalePins, lagPins := 0, 0, 0, 0
 
 	for _, pin := range cfg.Pins {
 		totalPins++
@@ -59,7 +62,27 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 			continue
 		}
 		cur := source.ResolveCurrent(ctx, pin)
-		if cur == "" {
+		// The live lookup stays authoritative; the sidecar's latest_seen is
+		// the newest recorded upstream version (data-and-rendering "Field
+		// rules": it changes on every poll that finds something new), so the
+		// comparison current is the newer of the two. Where the pinned
+		// version (verified_for, P1) is behind it, a sidecar-backed pin
+		// reports CONTENT-LAG instead of STALE (D7).
+		var sd *render.PinData
+		if sc != nil {
+			if p, ok := sc.Pins[pin.Name]; ok {
+				sd = &p
+			}
+		}
+		eff := cur
+		if sd != nil && sd.LatestSeen != "" {
+			if eff == "" {
+				eff = sd.LatestSeen
+			} else if pin.Kind != "github" && source.VerCmp(sd.LatestSeen, eff) > 0 {
+				eff = sd.LatestSeen
+			}
+		}
+		if eff == "" {
 			pinned := pin.Version
 			if pinned == "" {
 				pinned = "?"
@@ -69,11 +92,14 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		}
 		isSHA := pin.Kind == "github" && isSha(pin.Version)
 		if isSHA {
-			if strings.EqualFold(pin.Version, cur) {
-				items = append(items, Item{Kind: "FRESH", Line: fmt.Sprintf("FRESH    pin:%s  %s", pin.Name, cur)})
+			if strings.EqualFold(pin.Version, eff) {
+				items = append(items, Item{Kind: "FRESH", Line: fmt.Sprintf("FRESH    pin:%s  %s", pin.Name, eff)})
+			} else if sd != nil {
+				lagPins++
+				items = append(items, Item{Kind: "CONTENT-LAG", Line: fmt.Sprintf("CONTENT-LAG pin:%s  pinned %s → current %s", pin.Name, pin.Version, eff)})
 			} else {
 				stalePins++
-				items = append(items, Item{Kind: "STALE", Line: fmt.Sprintf("STALE    pin:%s  pinned %s → current %s", pin.Name, pin.Version, cur)})
+				items = append(items, Item{Kind: "STALE", Line: fmt.Sprintf("STALE    pin:%s  pinned %s → current %s", pin.Name, pin.Version, eff)})
 			}
 			continue
 		}
@@ -84,14 +110,19 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		if cmpVer == "" {
 			cmpVer = "0"
 		}
-		switch c := source.VerCmp(cmpVer, cur); {
+		switch c := source.VerCmp(cmpVer, eff); {
 		case c == 0:
-			items = append(items, Item{Kind: "FRESH", Line: fmt.Sprintf("FRESH    pin:%s  %s", pin.Name, cur)})
+			items = append(items, Item{Kind: "FRESH", Line: fmt.Sprintf("FRESH    pin:%s  %s", pin.Name, eff)})
 		case c < 0:
-			stalePins++
-			items = append(items, Item{Kind: "STALE", Line: fmt.Sprintf("STALE    pin:%s  pinned %s → current %s", pin.Name, pin.Version, cur)})
+			if sd != nil {
+				lagPins++
+				items = append(items, Item{Kind: "CONTENT-LAG", Line: fmt.Sprintf("CONTENT-LAG pin:%s  pinned %s → current %s", pin.Name, pin.Version, eff)})
+			} else {
+				stalePins++
+				items = append(items, Item{Kind: "STALE", Line: fmt.Sprintf("STALE    pin:%s  pinned %s → current %s", pin.Name, pin.Version, eff)})
+			}
 		default:
-			items = append(items, Item{Kind: "AHEAD", Line: fmt.Sprintf("AHEAD    pin:%s  pinned %s → current %s", pin.Name, pin.Version, cur)})
+			items = append(items, Item{Kind: "AHEAD", Line: fmt.Sprintf("AHEAD    pin:%s  pinned %s → current %s", pin.Name, pin.Version, eff)})
 		}
 	}
 
@@ -146,10 +177,28 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		}
 	}
 
+	// DRIFT: with a sidecar, a generated region or renderer-owned
+	// frontmatter key that differs from what the renderer would produce.
+	drift := 0
+	if sc != nil {
+		raw, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+		if err != nil {
+			return Report{}, &skill.ReadError{Path: filepath.Join(skillDir, "SKILL.md"), Err: err}
+		}
+		targets, err := render.DriftTargets(raw, sc)
+		if err != nil {
+			return Report{}, err
+		}
+		for _, tg := range targets {
+			drift++
+			items = append(items, Item{Kind: "DRIFT", Line: fmt.Sprintf("DRIFT    %s (SKILL.md)  differs from upkeep.data.json — run: upkeep render", tg)})
+		}
+	}
+
 	var parts []string
 	autoPins := totalPins - manualPins
 	if totalPins > 0 {
-		s := fmt.Sprintf("pins=%d/%d fresh", autoPins-stalePins, autoPins)
+		s := fmt.Sprintf("pins=%d/%d fresh", autoPins-stalePins-lagPins, autoPins)
 		if manualPins > 0 {
 			s += fmt.Sprintf(" (+%d manual)", manualPins)
 		}
@@ -165,6 +214,9 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		}
 		parts = append(parts, fmt.Sprintf("frozen=%d/%d intact", tot-tampered, tot))
 	}
+	if drift > 0 {
+		parts = append(parts, fmt.Sprintf("drift=%d", drift))
+	}
 	summary := strings.Join(parts, ", ")
 	if summary == "" {
 		summary = "no pins, dates, or frozen blocks configured"
@@ -174,8 +226,12 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 	switch {
 	case tampered > 0:
 		verdict = "TAMPERED"
-	case stalePins > 0 || staleDates > 0:
+	case stalePins > 0 || staleDates > 0 || drift > 0:
 		verdict = "STALE"
+	case lagPins > 0:
+		// CONTENT-LAG sits between STALE and FRESH (D7): the upstream
+		// version moved but the content is verified against an older one.
+		verdict = "CONTENT-LAG"
 	case len(parts) == 0:
 		verdict = "UNKNOWN"
 	}

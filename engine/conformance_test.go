@@ -142,7 +142,7 @@ func equalLines(a, b []string) bool {
 
 // goStrictExit mirrors the CLI's --strict exit rule.
 func goStrictExit(r *engine.CheckReport) int {
-	if r.MissingSkill || r.Verdict == "STALE" || r.Verdict == "TAMPERED" {
+	if r.MissingSkill || r.Verdict == "STALE" || r.Verdict == "TAMPERED" || r.Verdict == "CONTENT-LAG" {
 		return 1
 	}
 	return 0
@@ -162,6 +162,10 @@ func conformanceCases() []conformanceCase {
 		{"stale-date", "stale-date", "STALE", true, ""},
 		{"fresh-pin", "fresh-pin", "FRESH", false, ""},
 		{"stale-pin", "stale-pin", "STALE", true, ""},
+		// Sidecar-backed pin whose latest_seen (== the stub's live current)
+		// is ahead of verified_for: Go says CONTENT-LAG, the script says
+		// STALE — the P1 mapping handled by mapGoLines.
+		{"content-lag", "content-lag", "CONTENT-LAG", true, "CONTENT-LAG pin:stale-pkg"},
 		{"ahead-pin", "ahead-pin", "FRESH", false, ""},
 		{"sha-pin-fresh", "sha-pin-fresh", "FRESH", false, ""},
 		{"sha-pin-stale", "sha-pin-stale", "STALE", true, ""},
@@ -209,7 +213,7 @@ func TestConformanceFixtures(t *testing.T) {
 				t.Errorf("Go verdict = %q, want %q", report.Verdict, tc.verdict)
 			}
 			sl, sc := shLines(t, root, abs, false)
-			if !equalLines(gl, sl) {
+			if !equalLines(mapGoLines(gl), sl) {
 				t.Errorf("mismatch (default) for fixture %s:\nGO=%q\nSH=%q", tc.name, gl, sl)
 			}
 			if sc != 0 {
@@ -219,7 +223,7 @@ func TestConformanceFixtures(t *testing.T) {
 			// --strict mode
 			sgl, sReport := goLines(t, ctx, abs)
 			ssl, ssc := shLines(t, root, abs, true)
-			if !equalLines(sgl, ssl) {
+			if !equalLines(mapGoLines(sgl), ssl) {
 				t.Errorf("mismatch (strict) for fixture %s:\nGO=%q\nSH=%q", tc.name, sgl, ssl)
 			}
 			wantExit := goStrictExit(sReport)
