@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "owner": "KHAEntertainment",
+  "pins": {
+    "@anthropic-ai/claude-code": {
+      "kind": "npm",
+      "verified_for": "2.1.310",
+      "latest_seen": "2.1.312",
+      "checked_at": "2026-10-27",
+      "verified_at": "2026-10-24"
+    }
+  }
+}

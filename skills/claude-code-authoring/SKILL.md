@@ -14,6 +14,7 @@ metadata:
   upkeep-source-index: "https://code.claude.com/docs/llms.txt"
   upkeep-source-pages: "skills, hooks, hooks-guide, sub-agents, plugins, plugins-reference, plugin-marketplaces, plugin-evals, plugin-dependencies, settings, settings-reference, permissions, permission-modes, mcp, output-styles, memory, commands"
   upkeep-frozen-live-docs-authority: "sha256:b28d97505fc4121b"
+  upkeep-verified: "2026-10-24"
 ---
 
 # Claude Code Authoring
@@ -33,7 +34,22 @@ skill is just a cache of them.
 - If the line above was not expanded into a `VERDICT:` line (non-Claude harnesses), run `scripts/upkeep.sh check` from this skill's directory first.
 - **`VERDICT: TAMPERED`** → Stop immediately. A frozen owner-policy block was modified without authorization; revert or ask the user.
 - **`VERDICT: STALE`** → Cached references or version pins have drifted. Fetch the live page via `scripts/upkeep.sh fetch <page>` and re-verify before relying on the guidance below, then refresh the affected `Verified` dates and pins.
+- **`VERDICT: CONTENT-LAG`** → The pinned package moved on (`latest_seen` in `upkeep.data.json` is ahead of `verified_for`) and the update is pending re-verification. Fetch the live page for anything version-sensitive before acting.
 - **`VERDICT: FRESH`** → Proceed.
+
+## Version pins and freshness
+
+Machine-rendered from `upkeep.data.json` by `upkeep render`; hand edits are reported as `DRIFT` by `upkeep check` and overwritten on the next render.
+
+<!-- generated:pins -->
+| package | verified for | latest seen | checked |
+| --- | --- | --- | --- |
+| @anthropic-ai/claude-code | 2.1.310 | 2.1.312 | 2026-10-27 |
+<!-- /generated:pins -->
+
+<!-- generated:freshness -->
+Verified 2026-10-24 for @anthropic-ai/claude-code@2.1.310
+<!-- /generated:freshness -->
 
 ## Workflow
 
@@ -113,6 +129,15 @@ that rot.
 - **Blocking differs per event.** Exit 2 blocks only on events that can block,
   and the JSON decision field differs per event. Look up the event's "decision
   control" section every time.
+
+Stale habits and their current equivalents (machine-rendered from
+`upkeep.data.json`; rows are added by the redirect-drafting phase only after
+verification):
+
+<!-- generated:redirects -->
+| stale habit → current | since | source |
+| --- | --- | --- |
+<!-- /generated:redirects -->
 
 ## Validate
 

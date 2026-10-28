@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/KHAEntertainment/self-updating-skills/internal/check"
+	"github.com/KHAEntertainment/self-updating-skills/internal/render"
 	"github.com/KHAEntertainment/self-updating-skills/internal/skill"
 )
 
@@ -81,7 +82,17 @@ func CheckWithThreshold(ctx context.Context, dir string, threshold *int) (*Check
 		return nil, &Error{Op: "stat", Path: sk, Err: err}
 	}
 	cfg := skill.ParseFrontmatter(sk)
-	r, err := check.Compute(ctx, cfg, threshold, abs)
+	sc, err := render.LoadSidecar(abs)
+	if err != nil {
+		// A malformed sidecar (unknown keys, bad schema, invalid fields)
+		// must not blank the gate line and must not hide independent
+		// findings: check runs the full computation without the sidecar
+		// (sidecarErr makes Compute append the decode problem as a DRIFT
+		// item), so TAMPERED > STALE precedence holds naturally. render and
+		// stamp keep refusing to run.
+		sc = nil
+	}
+	r, err := check.Compute(ctx, cfg, threshold, abs, sc, err)
 	if err != nil {
 		var re *skill.ReadError
 		if errors.As(err, &re) {
@@ -123,7 +134,7 @@ func RenderText(r *CheckReport) string {
 	switch r.Verdict {
 	case "TAMPERED":
 		suffix = ". Revert owner-policy edits immediately!"
-	case "STALE":
+	case "STALE", "CONTENT-LAG":
 		suffix = ". Consult live docs before relying on cached references."
 	}
 	fmt.Fprintf(&sb, "VERDICT: %s — %s%s\n", r.Verdict, r.Summary, suffix)

@@ -40,7 +40,8 @@ func TestLiveRepoSkills(t *testing.T) {
 			sl, sc := shLines(t, root, sd, false)
 			fmt.Printf("\n=== %s (script exit %d) ===\n", name, sc)
 			fmt.Printf("GO:\n%s\nSCRIPT:\n%s\n", strings.Join(gl, "\n"), strings.Join(sl, "\n"))
-			if !equalLines(gl, sl) {
+			// Same comparator as the fixture conformance matrix (P1 mapping).
+			if !equalLines(mapGoLines(gl), sl) {
 				t.Errorf("mismatch for skill %s:\nGO=%q\nSH=%q", name, gl, sl)
 			}
 		})

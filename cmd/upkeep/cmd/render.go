@@ -1,0 +1,102 @@
+package cmd
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"syscall"
+
+	"github.com/KHAEntertainment/self-updating-skills/engine"
+	"github.com/spf13/cobra"
+)
+
+var (
+	renderCheck bool
+	renderJSON  bool
+)
+
+var renderCmd = &cobra.Command{
+	Use:   "render [--check] [dir]",
+	Short: "Rewrite generated regions and owned frontmatter keys from upkeep.data.json",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir := "."
+		if len(args) == 1 {
+			dir = args[0]
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return err
+		}
+		result, err := engine.Render(cmd.Context(), abs, renderCheck)
+		if err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			os.Exit(1)
+		}
+		if renderJSON {
+			b, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(b))
+			// The exit rule is format-independent: --check --json exits 1
+			// on drift exactly like the text output.
+			if exit := renderExitCode(result, renderCheck); exit != 0 {
+				os.Exit(exit)
+			}
+			return nil
+		}
+		if result.Changed && result.Diff != "" {
+			fmt.Fprint(cmd.OutOrStdout(), result.Diff)
+		}
+		line, exit := renderVerdict(result, renderCheck)
+		fmt.Fprintln(cmd.OutOrStdout(), line)
+		if exit != 0 {
+			os.Exit(exit)
+		}
+		return nil
+	},
+}
+
+func init() {
+	renderCmd.Flags().BoolVar(&renderCheck, "check", false, "compute what would change without writing; exit 1 on drift")
+	renderCmd.Flags().BoolVar(&renderJSON, "json", false, "print the RenderResult struct as JSON")
+}
+
+// missingSkill reports whether err is a stat failure for a missing
+// SKILL.md; the script's stamp exits 2 with an error line in that case.
+func missingSkill(err error) bool {
+	var ee *engine.Error
+	if errors.As(err, &ee) && ee.Op == "stat" {
+		var perr *os.PathError
+		if errors.As(ee.Err, &perr) && errors.Is(perr.Err, syscall.ENOENT) {
+			return true
+		}
+		return os.IsNotExist(ee.Err)
+	}
+	return false
+}
+
+// renderVerdict maps a render result to its human verdict line and process
+// exit code. In --check mode drift exits 1 without writing anything.
+func renderVerdict(r *engine.RenderResult, checkMode bool) (string, int) {
+	switch {
+	case checkMode && r.Changed:
+		return "VERDICT: DRIFT — SKILL.md differs from upkeep.data.json (run: upkeep render)", 1
+	case r.Changed:
+		return "VERDICT: RENDERED — SKILL.md rewritten from upkeep.data.json", 0
+	default:
+		return "VERDICT: UNCHANGED — output matches upkeep.data.json", 0
+	}
+}
+
+// renderExitCode is the exit rule for a render result, shared by every
+// output format: in --check mode drift exits 1.
+func renderExitCode(r *engine.RenderResult, checkMode bool) int {
+	if checkMode && r.Changed {
+		return 1
+	}
+	return 0
+}

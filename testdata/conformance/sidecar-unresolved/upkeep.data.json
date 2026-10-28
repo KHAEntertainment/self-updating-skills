@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "unres-pkg": {
+      "kind": "npm",
+      "verified_for": "1.0.0",
+      "latest_seen": "2.0.0",
+      "checked_at": "2026-01-01"
+    }
+  }
+}
