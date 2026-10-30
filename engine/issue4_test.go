@@ -109,22 +109,13 @@ func setStatePath(t *testing.T) string {
 	return path
 }
 
-var upkeepBinOnce sync.Once
-var upkeepBin string
-
-// buildUpkeep compiles the real binary once per test process.
+// buildUpkeep returns the real binary built once in TestMain with the
+// real PATH and -buildvcs=false (F4).
 func buildUpkeep(t *testing.T) string {
 	t.Helper()
-	upkeepBinOnce.Do(func() {
-		dir := os.TempDir()
-		upkeepBin = filepath.Join(dir, fmt.Sprintf("upkeep-test-%d", os.Getpid()))
-		cmd := exec.Command("go", "build", "-o", upkeepBin, "./cmd/upkeep")
-		cmd.Dir = repoRoot(t)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("build upkeep: %v\n%s", err, out)
-		}
-	})
+	if upkeepBin == "" {
+		t.Fatal("upkeep binary not built by TestMain")
+	}
 	return upkeepBin
 }
 
@@ -200,17 +191,25 @@ func TestACPinBehindPageChanged(t *testing.T) {
 	if sc != 0 {
 		t.Errorf("script exit = %d, want 0", sc)
 	}
-	foundScript := false
+	pinLineFound := false
+	verdictCount := 0
+	verdictOK := false
 	for _, l := range sl {
 		if l == pinLine {
-			foundScript = true
+			pinLineFound = true
 		}
-		if strings.HasPrefix(l, "VERDICT: STALE") {
-			foundScript = foundScript && true
+		if strings.HasPrefix(l, "VERDICT: ") {
+			verdictCount++
+			if strings.HasPrefix(l, "VERDICT: STALE — ") && len(l) > len("VERDICT: STALE — ") {
+				verdictOK = true
+			}
 		}
 	}
-	if !foundScript {
-		t.Errorf("script output missing pin line or STALE verdict; got %q", sl)
+	if !pinLineFound {
+		t.Errorf("script output missing pin line %q; got %q", pinLine, sl)
+	}
+	if verdictCount != 1 || !verdictOK {
+		t.Errorf("script must print exactly one real STALE verdict line; got %q", sl)
 	}
 	if s := goStrictExit(report); s != 1 {
 		t.Errorf("Go strict exit = %d, want 1", s)
@@ -1015,6 +1014,8 @@ func TestRestoreFailureSurfaced(t *testing.T) {
 // T5: Apply with a stale plan skips the skill with a report, writing
 // nothing.
 func TestApplyStalePlanSkips(t *testing.T) {
+	// gatePreWrite runs the full check computation, so npm must be stubbed.
+	setupStubPath(t)
 	dir := writeSkillFiles(t, map[string]string{
 		"SKILL.md": "---\nname: t\nmetadata:\n  upkeep-pins: \"stale-pkg=1.0.1\"\n---\n\n# T\n",
 		"upkeep.data.json": `{
@@ -1033,6 +1034,10 @@ func TestApplyStalePlanSkips(t *testing.T) {
 	})
 	setStatePath(t)
 	scBefore, _ := os.ReadFile(filepath.Join(dir, "upkeep.data.json"))
+	skBefore, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	plan := &engine.UpdatePlan{Skills: []engine.SkillPlan{{
 		SkillDir: dir,
@@ -1052,7 +1057,6 @@ func TestApplyStalePlanSkips(t *testing.T) {
 	if !strings.Contains(res.Skills[0].Reason, "plan stale") {
 		t.Errorf("reason = %q, want stale-plan cause", res.Skills[0].Reason)
 	}
-	skBefore, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
 	assertFilesUnchanged(t, dir, scBefore, skBefore)
 }
 
@@ -1138,4 +1142,334 @@ exit 2
 	if !strings.Contains(string(scAfter), `"latest_seen": "1.0.1"`) {
 		t.Errorf("poll facts lost: %s", scAfter)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix batch 2 regressions
+// ---------------------------------------------------------------------------
+
+// F1: public Apply must re-run the per-skill plan decision under its lease.
+// Policy, owner, verified_for and docs-baseline changes between Plan and
+// Apply all skip the skill; the unmutated control advances.
+func TestApplyStalePlanRegressions(t *testing.T) {
+	setupStubPath(t)
+
+	const baseSidecar = `{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "fresh-pkg": {
+      "kind": "npm",
+      "verified_for": "1.2.3",
+      "latest_seen": "1.2.4",
+      "checked_at": "2026-10-27"
+    }
+  }
+}
+`
+	baseSK := "---\nname: t\nmetadata:\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n---\n\n# T\n"
+
+	cases := []struct {
+		name   string
+		mutate func(t *testing.T, dir string)
+		want   string
+	}{
+		{"baseline-advance", nil, "written"},
+		{"policy-changed-to-none", func(t *testing.T, dir string) {
+			sk := "---\nname: t\nmetadata:\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n  upkeep-auto-advance: \"none\"\n---\n\n# T\n"
+			if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "skipped"},
+		{"owner-changed", func(t *testing.T, dir string) {
+			sc := strings.Replace(baseSidecar, `"owner": "ci"`, `"owner": "local"`, 1)
+			if err := os.WriteFile(filepath.Join(dir, "upkeep.data.json"), []byte(sc), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "skipped"},
+		{"verified-for-changed", func(t *testing.T, dir string) {
+			// Change verified_for consistently in both the sidecar and the
+			// frontmatter so the skill stays drift-free; the plan decision
+			// then flips to no-change (verified_for == latest_seen).
+			sk := "---\nname: t\nmetadata:\n  upkeep-pins: \"fresh-pkg=1.2.4\"\n---\n\n# T\n"
+			if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			sc := strings.Replace(baseSidecar, `"verified_for": "1.2.3"`, `"verified_for": "1.2.4"`, 1)
+			if err := os.WriteFile(filepath.Join(dir, "upkeep.data.json"), []byte(sc), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "skipped"},
+		{"docs-baseline-changed", func(t *testing.T, dir string) {
+			sk := "---\nname: t\nmetadata:\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n  upkeep-source-based: \"https://example.invalid/docs\"\n  upkeep-source-pages: \"intro\"\n---\n\n# T\n"
+			if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(sk), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			sc := `{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "fresh-pkg": {
+      "kind": "npm",
+      "verified_for": "1.2.3",
+      "latest_seen": "1.2.4",
+      "checked_at": "2026-10-27"
+    }
+  },
+  "docs": {
+    "intro": { "verified_sha": "sha256:aaa", "latest_sha": "sha256:bbb" }
+  }
+}
+`
+			if err := os.WriteFile(filepath.Join(dir, "upkeep.data.json"), []byte(sc), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "skipped"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeSkillFiles(t, map[string]string{
+				"SKILL.md":         baseSK,
+				"upkeep.data.json": baseSidecar,
+			})
+			if tc.mutate != nil {
+				tc.mutate(t, dir)
+			}
+			plan := &engine.UpdatePlan{Skills: []engine.SkillPlan{{
+				SkillDir: dir,
+				Status:   "advance",
+				Advances: []engine.Advance{{Pin: "fresh-pkg", From: "1.2.3", To: "1.2.4"}},
+			}}}
+			scBefore, _ := os.ReadFile(filepath.Join(dir, "upkeep.data.json"))
+			skBefore, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+			res, err := engine.Apply(ctx, plan, engine.ApplyOptions{Runner: "ci"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Skills) != 1 || res.Skills[0].Status != tc.want {
+				t.Fatalf("status = %+v, want %s", res.Skills, tc.want)
+			}
+			scAfter, _ := os.ReadFile(filepath.Join(dir, "upkeep.data.json"))
+			skAfter, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+			switch tc.want {
+			case "written":
+				if !strings.Contains(string(scAfter), `"verified_for": "1.2.4"`) {
+					t.Errorf("advance not persisted: %s", scAfter)
+				}
+			default:
+				if !bytes.Equal(scAfter, scBefore) || !bytes.Equal(skAfter, skBefore) {
+					t.Errorf("files changed on a skipped stale plan (sidecar equal=%v, skill equal=%v)", bytes.Equal(scAfter, scBefore), bytes.Equal(skAfter, skBefore))
+				}
+				if !strings.Contains(res.Skills[0].Reason, "plan stale") {
+					t.Errorf("reason = %q, want stale-plan cause", res.Skills[0].Reason)
+				}
+			}
+		})
+	}
+}
+
+// F2: a skipped-owner skill gets zero mutations of any kind — sidecar,
+// files, or DB snapshots — even when the lease holder is replaced during
+// its doc fetch.
+func TestTakeoverDuringPollSkippedOwnerWritesNoSnapshots(t *testing.T) {
+	setupStubPath(t)
+
+	takeoverOnce := sync.Once{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		takeoverOnce.Do(func() {
+			st, err := store.Open(os.Getenv("UPKEEP_STATE_DB"))
+			if err == nil {
+				_, _ = st.DB().Exec("UPDATE lease SET holder='replacement-holder' WHERE name='update'")
+				st.Close()
+			}
+		})
+		w.Write([]byte(headPage))
+	}))
+	defer srv.Close()
+
+	dir := writeSkillFiles(t, map[string]string{
+		"SKILL.md":         fmt.Sprintf(updateSkillBase, srv.URL),
+		"upkeep.data.json": updateSkillSidecar("ci", "1.0.0", false),
+	})
+	statePath := setStatePath(t)
+	scBefore, _ := os.ReadFile(filepath.Join(dir, "upkeep.data.json"))
+	skBefore, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	drift, err := engine.Poll(ctx, []string{dir}, engine.PollOptions{Runner: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drift[0].SkipReason == "" {
+		t.Fatalf("expected owner-mismatch skip, got %+v", drift[0])
+	}
+	assertFilesUnchanged(t, dir, scBefore, skBefore)
+
+	st, err := store.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var n int
+	if err := st.DB().QueryRow("SELECT count(*) FROM snapshots WHERE skill=?", filepath.Base(dir)).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("snapshots = %d, want 0 for a skipped-owner skill", n)
+	}
+}
+
+// F3: cancellation mid-poll still finalizes the run (outcome=failed,
+// finished_at set) and releases the lease.
+func TestCancelDuringPollFinalizesRunAndReleasesLease(t *testing.T) {
+	setupStubPath(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelOnce := sync.Once{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancelOnce.Do(func() { cancel() })
+		w.Write([]byte(headPage))
+	}))
+	defer srv.Close()
+
+	dir := writeSkillFiles(t, map[string]string{
+		"SKILL.md":         fmt.Sprintf(updateSkillBase, srv.URL),
+		"upkeep.data.json": updateSkillSidecar("ci", "1.0.0", true),
+	})
+	statePath := setStatePath(t)
+
+	_, err := engine.Update(ctx, []string{dir}, engine.UpdateOptions{Runner: "ci"})
+	if err == nil {
+		t.Fatal("Update must fail when canceled mid-poll")
+	}
+
+	bg := context.Background()
+	st, err := store.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	runs, err := st.RecentRuns(bg, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(runs))
+	}
+	if runs[0].Outcome != "failed" || runs[0].FinishedAt == "" {
+		t.Errorf("run = %+v, want failed with finished_at", runs[0])
+	}
+	var leaseCount int
+	if err := st.DB().QueryRow("SELECT count(*) FROM lease WHERE name='update'").Scan(&leaseCount); err != nil {
+		t.Fatal(err)
+	}
+	if leaseCount != 0 {
+		t.Errorf("lease rows = %d, want 0 after cancellation", leaseCount)
+	}
+}
+
+// C2: a declared upkeep-source-pages list is authoritative. Keys not
+// listed are pruned and reported; an empty declaration retires all pages;
+// an absent key falls back to the sidecar docs keys.
+func TestPollRetiresUndeclaredDocsKeys(t *testing.T) {
+	setupStubPath(t)
+	srv := pagesServer(t, map[string]string{"intro.md": headPage, "legacy.md": headPage, "only.md": headPage})
+	defer srv.Close()
+
+	sidecarWithLegacy := `{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "stale-pkg": {
+      "kind": "npm",
+      "verified_for": "1.0.0",
+      "latest_seen": "1.0.0",
+      "checked_at": "2026-10-27"
+    }
+  },
+  "docs": {
+    "intro": { "verified_sha": "` + headPageSHA + `", "latest_sha": "` + headPageSHA + `" },
+    "legacy": { "verified_sha": "` + headPageSHA + `", "latest_sha": "` + headPageSHA + `" }
+  }
+}
+`
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	t.Run("declared-subset-prunes-and-reports", func(t *testing.T) {
+		dir := writeSkillFiles(t, map[string]string{
+			"SKILL.md":         "---\nname: t\nmetadata:\n  upkeep-pins: \"stale-pkg=1.0.0\"\n  upkeep-source-base: \"" + srv.URL + "/docs\"\n  upkeep-source-ext: \".md\"\n  upkeep-source-pages: \"intro\"\n---\n\n# T\n",
+			"upkeep.data.json": sidecarWithLegacy,
+		})
+		drift, err := engine.Poll(ctx, []string{dir}, engine.PollOptions{Runner: "ci"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(drift[0].Pruned) != 1 || drift[0].Pruned[0] != "legacy" {
+			t.Errorf("Pruned = %v, want [legacy]", drift[0].Pruned)
+		}
+		scBody, _ := os.ReadFile(filepath.Join(dir, "upkeep.data.json"))
+		if strings.Contains(string(scBody), `"legacy"`) {
+			t.Errorf("legacy docs key not pruned: %s", scBody)
+		}
+		if !strings.Contains(string(scBody), `"intro"`) {
+			t.Errorf("intro docs key lost: %s", scBody)
+		}
+	})
+
+	t.Run("declared-empty-retires-all", func(t *testing.T) {
+		dir := writeSkillFiles(t, map[string]string{
+			"SKILL.md":         "---\nname: t\nmetadata:\n  upkeep-pins: \"stale-pkg=1.0.0\"\n  upkeep-source-base: \"" + srv.URL + "/docs\"\n  upkeep-source-ext: \".md\"\n  upkeep-source-pages: \"\"\n---\n\n# T\n",
+			"upkeep.data.json": sidecarWithLegacy,
+		})
+		drift, err := engine.Poll(ctx, []string{dir}, engine.PollOptions{Runner: "ci"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(drift[0].Pruned) != 2 {
+			t.Errorf("Pruned = %v, want both pages retired", drift[0].Pruned)
+		}
+		scBody, _ := os.ReadFile(filepath.Join(dir, "upkeep.data.json"))
+		if strings.Contains(string(scBody), `"docs"`) {
+			t.Errorf("docs map not emptied: %s", scBody)
+		}
+	})
+
+	t.Run("absent-falls-back-to-sidecar-keys", func(t *testing.T) {
+		dir := writeSkillFiles(t, map[string]string{
+			"SKILL.md": "---\nname: t\nmetadata:\n  upkeep-pins: \"stale-pkg=1.0.0\"\n  upkeep-source-base: \"" + srv.URL + "/docs\"\n  upkeep-source-ext: \".md\"\n---\n\n# T\n",
+			"upkeep.data.json": `{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "stale-pkg": {
+      "kind": "npm",
+      "verified_for": "1.0.0",
+      "latest_seen": "1.0.0",
+      "checked_at": "2026-10-27"
+    }
+  },
+  "docs": {
+    "only": { "verified_sha": "` + headPageSHA + `", "latest_sha": "` + headPageSHA + `" }
+  }
+}
+`,
+		})
+		drift, err := engine.Poll(ctx, []string{dir}, engine.PollOptions{Runner: "ci"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(drift[0].Pruned) != 0 {
+			t.Errorf("Pruned = %v, want none when the key is absent", drift[0].Pruned)
+		}
+		if len(drift[0].Docs) != 1 || drift[0].Docs[0].Page != "only" {
+			t.Errorf("docs drift = %+v, want only tracked", drift[0].Docs)
+		}
+	})
 }

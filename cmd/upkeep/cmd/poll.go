@@ -46,7 +46,12 @@ a plain poll or update.`,
 			Runner:   pollRunner,
 		})
 		if errors.Is(err, engine.ErrLeaseHeld) {
-			fmt.Fprintln(cmd.OutOrStdout(), "skipped: lease held")
+			// The skip shape is stable JSON on --json, plain text otherwise.
+			if pollJSON {
+				fmt.Fprintln(cmd.OutOrStdout(), `{"skipped_lease":true,"message":"skipped: lease held"}`)
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "skipped: lease held")
+			}
 			return nil
 		}
 		if err != nil {

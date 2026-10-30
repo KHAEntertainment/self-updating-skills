@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/KHAEntertainment/self-updating-skills/internal/check"
@@ -182,14 +183,13 @@ func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store,
 		dr.Pins = append(dr.Pins, pd)
 	}
 
-	// Tracked pages = union of frontmatter upkeep-source-pages and sidecar
-	// docs keys.
+	// Tracked pages: a declared upkeep-source-pages list is authoritative
+	// (empty retires all); an absent key falls back to the sidecar docs
+	// keys (C2).
+	tracked := trackedPages(cfg, sc)
 	pages := map[string]bool{}
-	for _, p := range cfg.Sources.Pages {
+	for _, p := range tracked {
 		pages[p] = true
-	}
-	for k := range sc.Docs {
-		pages[k] = true
 	}
 	pageNames := make([]string, 0, len(pages))
 	for p := range pages {
@@ -222,17 +222,8 @@ func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store,
 	}
 
 	if dr.SkipReason != "" || dr.BlockReason != "" {
-		// Still record fetched snapshots (research DB bookkeeping), but no
-		// sidecar writes.
-		for _, dd := range dr.Docs {
-			if dd.Error != "" || dd.LatestSHA == "" {
-				continue
-			}
-			if err := st.SaveSnapshot(ctx, filepath.Base(abs), dd.Page, time.Now(), dd.LatestSHA, string(bodies[dd.Page])); err != nil {
-				dr.BlockReason = fmt.Sprintf("store: %v", err)
-				return dr, nil
-			}
-		}
+		// No writes of any kind for this skill — sidecar, files, or DB
+		// snapshots (F2). A skipped/blocked skill is untouched.
 		return dr, nil
 	}
 
@@ -268,6 +259,18 @@ func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store,
 			sc2.Pins = map[string]render.PinData{}
 		}
 		sc2.Pins[pd.Name] = p
+	}
+	// Prune retired docs keys (declared list authoritative) and report them.
+	var pruned []string
+	for k := range sc2.Docs {
+		if !pages[k] {
+			pruned = append(pruned, k)
+			delete(sc2.Docs, k)
+		}
+	}
+	if len(pruned) > 0 {
+		sort.Strings(pruned)
+		dr.Pruned = pruned
 	}
 	for _, dd := range dr.Docs {
 		d, ok := sc2.Docs[dd.Page]
@@ -313,6 +316,21 @@ func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store,
 	}
 
 	return dr, nil
+}
+
+// trackedPages returns the pages a poll tracks: a declared
+// upkeep-source-pages list is authoritative (an empty declaration retires
+// all pages); an absent key falls back to the sidecar's docs keys (C2).
+func trackedPages(cfg skill.Config, sc *render.Sidecar) []string {
+	if cfg.Sources.PagesDeclared {
+		return append([]string(nil), cfg.Sources.Pages...)
+	}
+	out := make([]string, 0, len(sc.Docs))
+	for k := range sc.Docs {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // newerVersion reports whether cur should replace prev as latest_seen.
@@ -388,20 +406,9 @@ func writeWithRollback(ctx context.Context, abs string, sc *render.Sidecar, out 
 			restoreErrs = append(restoreErrs, "skill: "+e.Error())
 		}
 		if len(restoreErrs) > 0 {
-			return fmt.Errorf("write: %w; restore failed: %s", err, stringsJoin(restoreErrs, "; "))
+			return fmt.Errorf("write: %w; restore failed: %s", err, strings.Join(restoreErrs, "; "))
 		}
 		return err
 	}
 	return nil
-}
-
-func stringsJoin(parts []string, sep string) string {
-	out := ""
-	for i, p := range parts {
-		if i > 0 {
-			out += sep
-		}
-		out += p
-	}
-	return out
 }

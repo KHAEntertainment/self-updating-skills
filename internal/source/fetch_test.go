@@ -8,7 +8,15 @@ import (
 	"testing"
 )
 
+// setSeam enables the test-only plain-http seam for the duration of a test.
+func setSeam(t *testing.T) {
+	t.Helper()
+	AllowInsecureHTTP = "test"
+	t.Cleanup(func() { AllowInsecureHTTP = "" })
+}
+
 func TestFetchPage(t *testing.T) {
+	setSeam(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/docs/skills.md":
@@ -47,11 +55,58 @@ func TestFetchPage(t *testing.T) {
 }
 
 func TestFetchPageSizeCap(t *testing.T) {
+	setSeam(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(strings.Repeat("x", maxPageBytes+1)))
 	}))
 	defer srv.Close()
 	if _, err := FetchPage(context.Background(), srv.URL+"/docs", "big", ".md"); err == nil {
 		t.Error("oversized page must be an error")
+	}
+}
+
+// C1: with the seam off (default), plain http is refused on the initial
+// URL, and a redirect downgrade to http is refused even from an https
+// source. With the seam on, plain http works and https (TLSServer) works.
+func TestFetchPageHttpsOnly(t *testing.T) {
+	if AllowInsecureHTTP != "" {
+		t.Fatal("seam must default off for this test")
+	}
+
+	// Initial plain http refused with seam off.
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("x"))
+	}))
+	defer plain.Close()
+	if _, err := FetchPage(context.Background(), plain.URL+"/docs", "p", ".md"); err == nil {
+		t.Fatal("plain http must be refused when the seam is off")
+	} else if !strings.Contains(err.Error(), "non-https") {
+		t.Errorf("error = %v, want a non-https refusal", err)
+	}
+
+	// Redirect downgrade https → http refused with seam off.
+	downgrade := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/docs/p.md", http.StatusFound)
+	}))
+	defer downgrade.Close()
+	if _, err := FetchPage(context.Background(), downgrade.URL+"/docs", "p", ".md"); err == nil {
+		t.Fatal("https→http redirect must be refused when the seam is off")
+	} else if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("error = %v, want a redirect refusal", err)
+	}
+}
+
+func TestFetchPageHttpsSeamOn(t *testing.T) {
+	setSeam(t)
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("# TLS\n"))
+	}))
+	defer tlsSrv.Close()
+	body, err := FetchPage(context.Background(), tlsSrv.URL+"/docs", "tls", ".md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "# TLS") {
+		t.Errorf("body = %q", body)
 	}
 }

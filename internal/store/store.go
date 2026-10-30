@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,8 +93,7 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("store dir: %w", err)
 	}
-	dsn := "file:" + path + "?_pragma=busy_timeout(10000)"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
@@ -162,6 +162,13 @@ func migrateStep(ctx context.Context, conn *sql.Conn, ver int, step string) erro
 	}
 	committed = true
 	return nil
+}
+
+// dsn builds the SQLite URI for path, escaping path characters (? # %
+// space) while keeping the pragma options.
+func dsn(path string) string {
+	esc := strings.ReplaceAll(url.PathEscape(path), "%2F", "/")
+	return "file:" + esc + "?_pragma=busy_timeout(10000)"
 }
 
 // isBusy reports whether err is a SQLite locking condition (the losing

@@ -17,6 +17,9 @@ import (
 type ApplyOptions struct {
 	// StatePath is the SQLite state database path ("" = default).
 	StatePath string
+	// Runner is the owner runner re-checked under the lease ("ci" or
+	// "local"; default "local").
+	Runner string
 }
 
 // ApplyResult is the outcome of applying a plan: per-skill outcomes plus
@@ -32,10 +35,12 @@ type ApplyResult struct {
 // the single-writer lease, and applies the advancement steps of the plan.
 // Because the lease is taken after the plan was made, every advance entry
 // carries the expected verified_for/latest_seen; Apply re-reads each
-// skill's sidecar under the lease and skips (with a reported cause) any
-// skill whose sidecar no longer matches. A held lease returns
-// ErrLeaseHeld. A lease lost mid-run (expired and taken over) stops the
-// whole apply at once with ErrLeaseLost.
+// skill's sidecar and metadata under the lease and re-runs the per-skill
+// plan decision, skipping (with a reported cause) any skill whose
+// authorization no longer yields the same advance. A held lease returns an
+// ApplyResult with SkippedLease set (not an error). A lease lost mid-run
+// (expired and taken over) stops the whole apply at once with
+// ErrLeaseLost.
 func Apply(ctx context.Context, plan *UpdatePlan, opts ApplyOptions) (*ApplyResult, error) {
 	path := opts.StatePath
 	if path == "" {
@@ -62,7 +67,11 @@ func Apply(ctx context.Context, plan *UpdatePlan, opts ApplyOptions) (*ApplyResu
 		}
 	}()
 
-	results, err := applyPlan(ctx, st, holder, plan)
+	runner := opts.Runner
+	if runner == "" {
+		runner = "local"
+	}
+	results, err := applyPlan(ctx, st, holder, plan, runner)
 	if err != nil {
 		return &ApplyResult{Skills: results}, err
 	}
@@ -77,7 +86,7 @@ func Apply(ctx context.Context, plan *UpdatePlan, opts ApplyOptions) (*ApplyResu
 // renews ownership before every skill (writing or not) so a lease lost to
 // expiry takeover stops the whole cycle at once — no further writes for
 // any skill. Individual skill failures continue the cycle.
-func applyPlan(ctx context.Context, st *store.Store, holder string, plan *UpdatePlan) ([]SkillResult, error) {
+func applyPlan(ctx context.Context, st *store.Store, holder string, plan *UpdatePlan, runner string) ([]SkillResult, error) {
 	results := make([]SkillResult, 0, len(plan.Skills))
 	for i := range plan.Skills {
 		sp := &plan.Skills[i]
@@ -93,7 +102,7 @@ func applyPlan(ctx context.Context, st *store.Store, holder string, plan *Update
 			results = append(results, SkillResult{SkillDir: sp.SkillDir, Status: sp.Status, Reason: sp.Reason, DraftPins: sp.DraftPins, DraftPages: sp.DraftPages})
 			continue
 		}
-		sr, err := applyOne(ctx, sp)
+		sr, err := applyOne(ctx, sp, runner)
 		if err != nil {
 			sr.Status = "failed"
 			sr.Error = err.Error()
@@ -103,11 +112,11 @@ func applyPlan(ctx context.Context, st *store.Store, holder string, plan *Update
 	return results, nil
 }
 
-// applyOne applies one advance skill: pre-write gate, sidecar expectation
-// check (stale plan → skipped), write sidecar → render → check --strict,
-// with full byte restore of both files on any failure. Restore errors are
-// surfaced in the returned error.
-func applyOne(ctx context.Context, sp *SkillPlan) (SkillResult, error) {
+// applyOne applies one advance skill: pre-write gate, a full re-run of the
+// per-skill plan decision under the lease (stale plan → skipped), write
+// sidecar → render → check --strict, with full byte restore of both files
+// on any failure. Restore errors are surfaced in the returned error.
+func applyOne(ctx context.Context, sp *SkillPlan, runner string) (SkillResult, error) {
 	sr := SkillResult{SkillDir: sp.SkillDir, Advances: sp.Advances}
 	abs := sp.SkillDir
 	sk := filepath.Join(abs, render.SkillName)
@@ -123,8 +132,19 @@ func applyOne(ctx context.Context, sp *SkillPlan) (SkillResult, error) {
 		return sr, err
 	}
 
-	// Stale-plan guard: the plan was made under an earlier lease; re-read
-	// the sidecar under this lease and skip with a report on mismatch.
+	// Stale-plan guard (F1): the plan was authorized under an earlier
+	// lease against an earlier policy/evidence. Re-read the sidecar and
+	// SKILL.md metadata and re-run the same per-skill plan decision; only
+	// if it still yields exactly the same advance (same From→To) do we
+	// write. Otherwise skip with a report — nothing is advanced after the
+	// policy or evidence changed.
+	replanned := planSkill(rebuildDrift(abs, cfg, sc), runner)
+	if replanned.Status != "advance" || !sameAdvances(replanned.Advances, sp.Advances) {
+		sr.Status = "skipped"
+		sr.Reason = fmt.Sprintf("plan stale: re-check under lease yields %s (%s)", replanned.Status, replanned.Reason)
+		return sr, nil
+	}
+	// The original From values still match the re-checked advance.
 	for _, adv := range sp.Advances {
 		p, ok := sc.Pins[adv.Pin]
 		if !ok {
@@ -200,4 +220,50 @@ func applyOne(ctx context.Context, sp *SkillPlan) (SkillResult, error) {
 	}
 	sr.Status = "written"
 	return sr, nil
+}
+
+// rebuildDrift reconstructs the per-skill drift from the current sidecar
+// and SKILL.md metadata — the inputs the plan decision consumed — without
+// network polling (F1). Latest facts already persist in the sidecar.
+func rebuildDrift(abs string, cfg skill.Config, sc *render.Sidecar) Drift {
+	dr := Drift{SkillDir: abs, Owner: sc.Owner, AutoAdvance: cfg.AutoAdvance}
+	for _, pin := range cfg.Pins {
+		if pin.Kind == "manual" {
+			continue
+		}
+		pd := PinDrift{Name: pin.Name, Kind: pin.Kind}
+		if p, ok := sc.Pins[pin.Name]; ok {
+			pd.VerifiedFor = p.VerifiedFor
+			pd.LatestSeen = p.LatestSeen
+		}
+		dr.Pins = append(dr.Pins, pd)
+	}
+	for _, pg := range trackedPages(cfg, sc) {
+		dd := DocDrift{Page: pg}
+		if d, ok := sc.Docs[pg]; ok {
+			dd.VerifiedSHA = d.VerifiedSHA
+			dd.LatestSHA = d.LatestSHA
+			dd.Changed = d.VerifiedSHA != "" && d.VerifiedSHA != d.LatestSHA
+		}
+		dr.Docs = append(dr.Docs, dd)
+	}
+	return dr
+}
+
+// sameAdvances reports whether two advance lists name the same pins with
+// the same From→To transitions (order-independent).
+func sameAdvances(a, b []Advance) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, adv := range a {
+		seen[adv.Pin+"\x00"+adv.From+"\x00"+adv.To] = true
+	}
+	for _, adv := range b {
+		if !seen[adv.Pin+"\x00"+adv.From+"\x00"+adv.To] {
+			return false
+		}
+	}
+	return true
 }

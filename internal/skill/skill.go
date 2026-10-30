@@ -35,6 +35,10 @@ type Sources struct {
 	TTLMinutes int
 	IndexURL   string
 	Pages      []string
+	// PagesDeclared distinguishes a declared upkeep-source-pages list —
+	// including an explicitly empty one, which retires all pages — from an
+	// absent one, which falls back to the sidecar's docs keys (C2).
+	PagesDeclared bool
 }
 
 // FrozenEntry is a recorded frozen-block id/hash pair, in metadata order.
@@ -238,12 +242,14 @@ func ParseFrontmatter(skPath string) Config {
 		}
 	}
 	srcStr := strings.Join(srcLines, "\n")
+	pages, pagesDeclared := srcPages(flat, srcStr)
 	cfg.Sources = Sources{
-		BaseURL:  srcScalar(flat, "upkeep-source-base", srcStr, "base_url", ""),
-		Ext:      srcScalar(flat, "upkeep-source-ext", srcStr, "ext", ".md"),
-		Cache:    srcScalar(flat, "upkeep-source-cache", srcStr, "cache_name", cfg.SkillName+"-docs"),
-		IndexURL: srcScalar(flat, "upkeep-source-index", srcStr, "index_url", ""),
-		Pages:    srcPages(flat, srcStr),
+		BaseURL:       srcScalar(flat, "upkeep-source-base", srcStr, "base_url", ""),
+		Ext:           srcScalar(flat, "upkeep-source-ext", srcStr, "ext", ".md"),
+		Cache:         srcScalar(flat, "upkeep-source-cache", srcStr, "cache_name", cfg.SkillName+"-docs"),
+		IndexURL:      srcScalar(flat, "upkeep-source-index", srcStr, "index_url", ""),
+		Pages:         pages,
+		PagesDeclared: pagesDeclared,
 	}
 	ttl := srcScalar(flat, "upkeep-source-ttl", srcStr, "ttl_minutes", "720")
 	if n, err := strconv.Atoi(ttl); err == nil {
@@ -389,8 +395,14 @@ func srcScalar(flat map[string]string, flatKey, srcStr, nestedKey, def string) s
 
 var pagesBlockStartRe = regexp.MustCompile(`^[ \t]{4}pages:[ \t]*$`)
 
-func srcPages(flat map[string]string, srcStr string) []string {
-	if v, ok := flat["upkeep-source-pages"]; ok && v != "" {
+// srcPages parses the upkeep-source-pages declaration across every form the
+// frontmatter parser supports (flat key, nested inline `pages: []`, and
+// nested block bullets). It returns the page list and whether the key was
+// declared at all — an explicitly empty declaration (flat "" or empty
+// inline/block) is declared and retires all pages, while an absent key
+// returns declared=false (callers fall back to the sidecar docs keys).
+func srcPages(flat map[string]string, srcStr string) ([]string, bool) {
+	if v, ok := flat["upkeep-source-pages"]; ok {
 		var pages []string
 		for _, p := range strings.Split(v, ",") {
 			p = strings.TrimSpace(p)
@@ -398,7 +410,7 @@ func srcPages(flat map[string]string, srcStr string) []string {
 				pages = append(pages, strings.Trim(p, "\"'"))
 			}
 		}
-		return pages
+		return pages, true
 	}
 	for _, ln := range strings.Split(srcStr, "\n") {
 		if mm := inlinePagesRe.FindStringSubmatch(ln); mm != nil {
@@ -409,7 +421,7 @@ func srcPages(flat map[string]string, srcStr string) []string {
 					pages = append(pages, strings.Trim(p, "\"'"))
 				}
 			}
-			return pages
+			return pages, true
 		}
 	}
 	// block form: 4-space "pages:" line followed by "- " bullets
@@ -421,7 +433,7 @@ func srcPages(flat map[string]string, srcStr string) []string {
 		}
 	}
 	if start < 0 {
-		return nil
+		return nil, false
 	}
 	blockLines := strings.Split(srcStr, "\n")[start+1:]
 	var pages []string
@@ -437,7 +449,7 @@ func srcPages(flat map[string]string, srcStr string) []string {
 			pages = append(pages, strings.Trim(strings.TrimSpace(s[2:]), "\"'"))
 		}
 	}
-	return pages
+	return pages, true
 }
 
 // isFourSpaceSibling is the pages-block boundary: up to four leading

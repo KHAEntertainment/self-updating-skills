@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"time"
+
 	"context"
 	"os"
 
@@ -69,18 +71,37 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		return &UpdateResult{SkippedLease: true}, nil
 	}
 
-	// F6: every path after StartRun finishes the run, outcome=failed with
-	// the error. The defer closes the run no matter how we return.
+	// F3/F6: every path after StartRun finishes the run (outcome=failed
+	// with the error) and releases the lease, using a bounded context that
+	// survives request cancellation. The run record is finalized before
+	// the lease is released; finalization/release errors are surfaced on
+	// the success path too.
 	outcome := "failed"
 	var report string
 	runID := int64(0)
 	runStarted := false
-	defer func() {
-		_ = st.ReleaseLease(ctx, "update", holder)
-		if runStarted {
-			_ = st.FinishRun(ctx, runID, outcome, report)
+	finalized := false
+	finish := func() error {
+		if finalized {
+			return nil
 		}
-	}()
+		finalized = true
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		var ferr, rerr error
+		if runStarted {
+			ferr = st.FinishRun(cctx, runID, outcome, report)
+		}
+		rerr = st.ReleaseLease(cctx, "update", holder)
+		switch {
+		case ferr != nil:
+			return &Error{Op: "run", Path: path, Err: ferr}
+		case rerr != nil:
+			return &Error{Op: "lease", Path: path, Err: rerr}
+		}
+		return nil
+	}
+	defer func() { _ = finish() }()
 
 	runID, err = st.StartRun(ctx, opts.Runner)
 	if err != nil {
@@ -98,7 +119,7 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		report = reportJSON(map[string]string{"error": err.Error()})
 		return nil, &Error{Op: "plan", Path: path, Err: err}
 	}
-	results, err := applyPlan(ctx, st, holder, plan)
+	results, err := applyPlan(ctx, st, holder, plan, opts.Runner)
 	if err != nil {
 		report = reportJSON(struct {
 			Plan    *UpdatePlan   `json:"plan"`
@@ -119,6 +140,9 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		Results []SkillResult `json:"results"`
 	}{plan, results})
 
+	if err := finish(); err != nil {
+		return &UpdateResult{Plan: plan, Skills: results, RunID: runID, RunOutcome: outcome}, err
+	}
 	return &UpdateResult{Plan: plan, Skills: results, RunID: runID, RunOutcome: outcome}, nil
 }
 

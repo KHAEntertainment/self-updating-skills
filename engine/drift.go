@@ -7,11 +7,13 @@
 package engine
 
 import (
+	"fmt"
+
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/KHAEntertainment/self-updating-skills/internal/source"
@@ -44,6 +46,10 @@ type Drift struct {
 	BlockReason string     `json:"block_reason,omitempty"`
 	Pins        []PinDrift `json:"pins,omitempty"`
 	Docs        []DocDrift `json:"docs,omitempty"`
+	// Pruned lists sidecar docs keys retired by a declared
+	// upkeep-source-pages list and removed from the sidecar on this poll
+	// (C2). SQLite snapshot history is retained.
+	Pruned []string `json:"pruned,omitempty"`
 }
 
 // Advance is one pin to advance.
@@ -98,16 +104,20 @@ func sha256Hex(b []byte) string {
 // auto-advance.
 var stableSemverRe = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)$`)
 
-// stableTriplet parses a stable semver into (major, minor, patch).
+// stableTriplet parses a stable semver into (major, minor, patch) using
+// strconv; any parse failure (including decimal overflow) means not
+// stable (C4).
 func stableTriplet(v string) (int, int, int, bool) {
 	m := stableSemverRe.FindStringSubmatch(strings.TrimSpace(v))
 	if m == nil {
 		return 0, 0, 0, false
 	}
-	var a, b, c int
-	fmt.Sscanf(m[1], "%d", &a)
-	fmt.Sscanf(m[2], "%d", &b)
-	fmt.Sscanf(m[3], "%d", &c)
+	a, errA := strconv.Atoi(m[1])
+	b, errB := strconv.Atoi(m[2])
+	c, errC := strconv.Atoi(m[3])
+	if errA != nil || errB != nil || errC != nil {
+		return 0, 0, 0, false
+	}
 	return a, b, c, true
 }
 

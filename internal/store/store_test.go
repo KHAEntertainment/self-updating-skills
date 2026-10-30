@@ -181,3 +181,47 @@ func openTestStore(t *testing.T) *Store {
 	t.Cleanup(func() { st.Close() })
 	return st
 }
+
+// C5: state paths containing URI-significant characters (? # % space) must
+// open and round-trip through the escaped DSN.
+func TestOpenStatePathSpecialChars(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a b?c#d%e")
+	path := filepath.Join(dir, "state.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if err := st.SaveSnapshot(ctx, "s", "p", time.Now(), "sha256:aaa", "body"); err != nil {
+		t.Fatal(err)
+	}
+	sha, _, ok, err := st.LatestSnapshot(ctx, "s", "p")
+	if err != nil || !ok || sha != "sha256:aaa" {
+		t.Errorf("round-trip = %q ok=%v err=%v", sha, ok, err)
+	}
+}
+
+// C6: a page changing A→B→A within one second must read A as latest — the
+// re-fetch of A inserts a fresh rowid that wins the tie-break.
+func TestSnapshotOrderABARefetch(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.SaveSnapshot(ctx, "s", "p", now, "sha256:aaa", "A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSnapshot(ctx, "s", "p", now, "sha256:bbb", "B"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSnapshot(ctx, "s", "p", now, "sha256:aaa", "A"); err != nil {
+		t.Fatal(err)
+	}
+	sha, _, ok, err := st.LatestSnapshot(ctx, "s", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || sha != "sha256:aaa" {
+		t.Errorf("latest = %q ok=%v, want sha256:aaa (newest rowid wins)", sha, ok)
+	}
+}
