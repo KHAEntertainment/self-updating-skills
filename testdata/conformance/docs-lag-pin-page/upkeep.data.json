@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "stale-pkg": {
+      "kind": "npm",
+      "verified_for": "1.0.0",
+      "latest_seen": "2.0.0",
+      "checked_at": "2026-10-27"
+    }
+  },
+  "docs": {
+    "intro": {
+      "verified_sha": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "latest_sha": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  }
+}
