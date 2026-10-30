@@ -2,7 +2,7 @@ module github.com/KHAEntertainment/self-updating-skills
 
 go 1.26.0
 
-toolchain go1.26.1
+toolchain go1.26.10
 
 require (
 	github.com/spf13/cobra v1.9.1

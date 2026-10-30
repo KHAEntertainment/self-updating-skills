@@ -175,6 +175,10 @@ func TestCheckMalformedMarkerIsDriftVerdict(t *testing.T) {
 // a precise error, leaving both files unchanged; the committed retrofit
 // sidecar still loads.
 func TestMalformedSidecarRefusesMutations(t *testing.T) {
+	// The check path below reaches the full computation (sidecarErr is
+	// carried as a DRIFT item, every other check still runs), so the npm
+	// stub is required — the suite must never touch the real registry.
+	setupStubPath(t)
 	root := repoRoot(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -188,8 +192,8 @@ func TestMalformedSidecarRefusesMutations(t *testing.T) {
 	}
 	for _, bc := range badSidecars {
 		t.Run(bc.name, func(t *testing.T) {
-			// A minimal in-repo-shaped skill, no stub lookups needed for
-			// render/stamp; check only needs the error before compute.
+			// A minimal in-repo-shaped skill; render/stamp need no
+			// lookups, and check's full computation is stubbed above.
 			dir := t.TempDir()
 			doc := "---\nname: t\nmetadata:\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n---\n\n# T\n\n<!-- frozen:pol -->\nf\n<!-- /frozen:pol -->\n"
 			skPath := filepath.Join(dir, "SKILL.md")

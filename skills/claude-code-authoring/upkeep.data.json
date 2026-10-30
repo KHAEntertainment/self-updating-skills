@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "owner": "KHAEntertainment",
+  "owner": "ci",
   "pins": {
     "@anthropic-ai/claude-code": {
       "kind": "npm",
