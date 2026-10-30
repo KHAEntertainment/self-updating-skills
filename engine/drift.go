@@ -68,12 +68,17 @@ type UpdatePlan struct {
 	Skills []SkillPlan `json:"skills"`
 }
 
-// SkillResult is one skill's apply outcome.
+// SkillResult is one skill's apply outcome. Status is "written" for a
+// successful advance, "skipped" (stale plan, lease lost) or "failed" for
+// an error; non-advance plan statuses pass through unchanged.
 type SkillResult struct {
-	SkillDir string    `json:"skill_dir"`
-	Status   string    `json:"status"`
-	Reason   string    `json:"reason,omitempty"`
-	Advances []Advance `json:"advances,omitempty"`
+	SkillDir   string    `json:"skill_dir"`
+	Status     string    `json:"status"`
+	Reason     string    `json:"reason,omitempty"`
+	Advances   []Advance `json:"advances,omitempty"`
+	DraftPins  []string  `json:"draft_pins,omitempty"`
+	DraftPages []string  `json:"draft_pages,omitempty"`
+	Error      string    `json:"error,omitempty"`
 }
 
 // shaRe matches the SHA pin identity form (same shape as check.isSha).

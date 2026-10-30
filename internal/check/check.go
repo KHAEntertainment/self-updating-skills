@@ -132,9 +132,11 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 
 	// Tracked doc pages: a page whose latest fetched snapshot (recorded by
 	// poll in the sidecar) differs from its verified_sha reports
-	// CONTENT-LAG (D7) — even when no version moved. Pages without a
-	// verified_sha baseline or without a recorded latest_sha carry no
-	// signal (missing evidence never reads as lag).
+	// CONTENT-LAG (D7) — even when no version moved. A page with a latest
+	// snapshot but no verified_sha baseline also reports CONTENT-LAG: it
+	// can never produce a false FRESH, and Plan routes it to drafting
+	// (never auto-accepted on missing evidence). A page with no recorded
+	// latest_sha carries no signal at all.
 	pageLag := 0
 	totalPages, verifiedPages := 0, 0
 	if sc != nil && len(sc.Docs) > 0 {
@@ -153,8 +155,12 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 				verifiedPages++
 				continue
 			}
+			verifiedLabel := d.VerifiedSHA
+			if verifiedLabel == "" {
+				verifiedLabel = "(none)"
+			}
 			pageLag++
-			items = append(items, Item{Kind: "CONTENT-LAG", Line: fmt.Sprintf("CONTENT-LAG page:%s  verified %s → current %s", n, d.VerifiedSHA, d.LatestSHA)})
+			items = append(items, Item{Kind: "CONTENT-LAG", Line: fmt.Sprintf("CONTENT-LAG page:%s  verified %s → current %s", n, verifiedLabel, d.LatestSHA)})
 		}
 	}
 

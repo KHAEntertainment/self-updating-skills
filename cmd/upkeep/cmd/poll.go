@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/KHAEntertainment/self-updating-skills/engine"
-	"github.com/KHAEntertainment/self-updating-skills/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -25,11 +25,11 @@ ls-remote --tags) and fetches tracked doc pages, records snapshots in the
 state database, and writes the sidecar (latest_seen, checked_at,
 latest_sha) plus the rendered SKILL.md together.
 
-The poll lease is taken first: only one poll or update may write skill
-files at a time. A losing process prints "skipped: lease held" and exits
-0. --seed-docs is the explicit step that fills a missing
-docs.<page>.verified_sha baseline; it is never implied by a plain poll or
-update.`,
+Poll takes the same single-writer lease as update, so only one poll or
+update may write skill files at a time. A losing process prints
+"skipped: lease held" and exits 0. --seed-docs is the explicit step that
+fills a missing docs.<page>.verified_sha baseline; it is never implied by
+a plain poll or update.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -41,32 +41,14 @@ update.`,
 			}
 			abs[i] = p
 		}
-		path := store.DefaultStatePath()
-		st, err := store.Open(path)
-		if err != nil {
-			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			os.Exit(1)
-		}
-		defer st.Close()
-
-		holder := store.NewHolder()
-		ok, err := st.AcquireLease(ctx, "poll", holder, store.LeaseTTL)
-		if err != nil {
-			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			os.Exit(1)
-		}
-		if !ok {
+		drift, err := engine.Poll(ctx, abs, engine.PollOptions{
+			SeedDocs: pollSeedDocs,
+			Runner:   pollRunner,
+		})
+		if errors.Is(err, engine.ErrLeaseHeld) {
 			fmt.Fprintln(cmd.OutOrStdout(), "skipped: lease held")
 			return nil
 		}
-
-		drift, err := engine.Poll(ctx, abs, engine.PollOptions{
-			Persist:      true,
-			WriteSidecar: true,
-			SeedDocs:     pollSeedDocs,
-			Runner:       pollRunner,
-		}, st)
-		_ = st.ReleaseLease(ctx, "poll", holder)
 		if err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)

@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,15 +17,20 @@ import (
 	"github.com/KHAEntertainment/self-updating-skills/internal/store"
 )
 
+// ErrLeaseHeld is returned by mutating engine operations when another
+// process holds the single-writer lease. Callers print
+// "skipped: lease held" and exit 0.
+var ErrLeaseHeld = errors.New("skipped: lease held")
+
+// ErrLeaseLost is returned when the lease row is gone mid-run (expired
+// and taken over, or released): the run must stop writing at once.
+var ErrLeaseLost = errors.New("lease lost")
+
 // PollOptions controls a poll run.
 type PollOptions struct {
-	// Persist stores fetched page snapshots in the SQLite store (st must
-	// be non-nil then).
-	Persist bool
-	// WriteSidecar writes the updated sidecar and renders SKILL.md.
-	// Poll is the only writer of fetch facts (latest_seen, checked_at,
-	// latest_sha); without it the poll is a read-only simulation.
-	WriteSidecar bool
+	// StatePath is the SQLite state database path ("" = the default
+	// resolved by store.DefaultStatePath).
+	StatePath string
 	// SeedDocs fills missing docs.<page>.verified_sha baselines from the
 	// current snapshot. It is an explicit, deliberate act — never implied
 	// by a plain poll or update (upkeep-auto-advance never seeds).
@@ -33,15 +39,60 @@ type PollOptions struct {
 	Runner string
 }
 
-// Poll fetches the latest upstream versions and tracked doc pages for each
-// skill dir, and — per options — records snapshots and writes the sidecar
-// + rendered SKILL.md. A skill whose sidecar write is gated off (owner
-// mismatch, TAMPERED, DRIFT) or impossible (no sidecar) is reported with a
-// SkipReason/BlockReason and is otherwise untouched.
-func Poll(ctx context.Context, dirs []string, opts PollOptions, st *store.Store) ([]Drift, error) {
+// Poll is the public poll operation: it opens the state database, takes
+// the single-writer lease ("update" — the same lease `update` uses, so a
+// poll and an update can never write the same skills at once), fetches the
+// latest upstream versions and tracked doc pages, records snapshots, and
+// writes the sidecar + rendered SKILL.md for every owned, non-blocked
+// skill. On a held lease it returns ErrLeaseHeld and writes nothing.
+//
+// The lease is held for the whole poll; ownership is renewed after
+// fetching and immediately before each skill's file writes, so an expired
+// lease taken over by another process stops this poll at once
+// (ErrLeaseLost).
+func Poll(ctx context.Context, dirs []string, opts PollOptions) ([]Drift, error) {
+	path := opts.StatePath
+	if path == "" {
+		path = store.DefaultStatePath()
+	}
+	st, err := store.Open(path)
+	if err != nil {
+		return nil, &Error{Op: "open store", Path: path, Err: err}
+	}
+	defer st.Close()
+
+	holder := store.NewHolder()
+	ok, err := st.AcquireLease(ctx, "update", holder, store.LeaseTTL)
+	if err != nil {
+		return nil, &Error{Op: "lease", Path: path, Err: err}
+	}
+	if !ok {
+		return nil, ErrLeaseHeld
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = st.ReleaseLease(ctx, "update", holder)
+		}
+	}()
+
+	drift, err := pollLocked(ctx, dirs, opts, st, holder)
+	if err != nil {
+		return nil, &Error{Op: "poll", Path: path, Err: err}
+	}
+	if err := st.ReleaseLease(ctx, "update", holder); err != nil {
+		return nil, &Error{Op: "lease", Path: path, Err: err}
+	}
+	released = true
+	return drift, nil
+}
+
+// pollLocked runs the poll body while the caller holds the update lease
+// (st non-nil). It renews ownership before each skill's writes.
+func pollLocked(ctx context.Context, dirs []string, opts PollOptions, st *store.Store, holder string) ([]Drift, error) {
 	out := make([]Drift, 0, len(dirs))
 	for _, dir := range dirs {
-		dr, err := pollOne(ctx, dir, opts, st)
+		dr, err := pollOne(ctx, dir, opts, st, holder)
 		if err != nil {
 			return nil, err
 		}
@@ -50,7 +101,21 @@ func Poll(ctx context.Context, dirs []string, opts PollOptions, st *store.Store)
 	return out, nil
 }
 
-func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store) (Drift, error) {
+// pollDryRun computes drift without any persistence: no state database, no
+// lease, no sidecar or file writes. It is the engine of `update --dry-run`.
+func pollDryRun(ctx context.Context, dirs []string, opts PollOptions) ([]Drift, error) {
+	out := make([]Drift, 0, len(dirs))
+	for _, dir := range dirs {
+		dr, err := pollOne(ctx, dir, opts, nil, "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, dr)
+	}
+	return out, nil
+}
+
+func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store, holder string) (Drift, error) {
 	abs, err := resolveSkillDir(dir)
 	if err != nil {
 		return Drift{}, err
@@ -151,7 +216,23 @@ func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store)
 		dr.Docs = append(dr.Docs, dd)
 	}
 
-	if !opts.WriteSidecar || dr.SkipReason != "" || dr.BlockReason != "" {
+	if st == nil {
+		// Dry-run: nothing is ever written.
+		return dr, nil
+	}
+
+	if dr.SkipReason != "" || dr.BlockReason != "" {
+		// Still record fetched snapshots (research DB bookkeeping), but no
+		// sidecar writes.
+		for _, dd := range dr.Docs {
+			if dd.Error != "" || dd.LatestSHA == "" {
+				continue
+			}
+			if err := st.SaveSnapshot(ctx, filepath.Base(abs), dd.Page, time.Now(), dd.LatestSHA, string(bodies[dd.Page])); err != nil {
+				dr.BlockReason = fmt.Sprintf("store: %v", err)
+				return dr, nil
+			}
+		}
 		return dr, nil
 	}
 
@@ -161,6 +242,16 @@ func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store)
 	if err := gatePreWrite(ctx, abs, cfg, sc); err != nil {
 		dr.BlockReason = err.Error()
 		return dr, nil
+	}
+
+	// Renew lease ownership immediately before this skill's writes: a
+	// takeover during fetching stops us at once.
+	ok, err := st.RenewLease(ctx, "update", holder, store.LeaseTTL)
+	if err != nil {
+		return dr, err
+	}
+	if !ok {
+		return dr, ErrLeaseLost
 	}
 
 	sc2 := cloneSidecar(sc)
@@ -209,18 +300,15 @@ func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store)
 		return dr, err
 	}
 
-	// Store snapshot content after a successful write (persist path),
-	// reusing the bodies fetched above.
-	if opts.Persist && st != nil {
-		for _, dd := range dr.Docs {
-			if dd.Error != "" || dd.LatestSHA == "" {
-				continue
-			}
-			if err := st.SaveSnapshot(ctx, filepath.Base(abs), dd.Page, time.Now(), dd.LatestSHA, string(bodies[dd.Page])); err != nil {
-				// Snapshot persistence is best-effort; report on the drift.
-				dr.BlockReason = fmt.Sprintf("store: %v", err)
-				return dr, nil
-			}
+	// Store snapshot content after a successful write, reusing the bodies
+	// fetched above.
+	for _, dd := range dr.Docs {
+		if dd.Error != "" || dd.LatestSHA == "" {
+			continue
+		}
+		if err := st.SaveSnapshot(ctx, filepath.Base(abs), dd.Page, time.Now(), dd.LatestSHA, string(bodies[dd.Page])); err != nil {
+			dr.BlockReason = fmt.Sprintf("store: %v", err)
+			return dr, nil
 		}
 	}
 
@@ -278,7 +366,8 @@ func cloneSidecar(sc *render.Sidecar) *render.Sidecar {
 
 // writeWithRollback writes the sidecar then SKILL.md, restoring both files
 // to their prior bytes if any write fails — nothing half-advanced stays on
-// disk.
+// disk. A failed restore is surfaced (not discarded): it is the worst case
+// and must be loud.
 func writeWithRollback(ctx context.Context, abs string, sc *render.Sidecar, out []byte) error {
 	sidecarPath := filepath.Join(abs, render.SidecarName)
 	origSC, err := os.ReadFile(sidecarPath)
@@ -291,9 +380,28 @@ func writeWithRollback(ctx context.Context, abs string, sc *render.Sidecar, out 
 		return err
 	}
 	if _, _, err := render.Apply(abs, sc, out); err != nil {
-		_ = render.WriteFileAtomic(sidecarPath, origSC)
-		_ = render.WriteFileAtomic(skillPath, origSK)
+		var restoreErrs []string
+		if e := render.WriteFileAtomic(sidecarPath, origSC); e != nil {
+			restoreErrs = append(restoreErrs, "sidecar: "+e.Error())
+		}
+		if e := render.WriteFileAtomic(skillPath, origSK); e != nil {
+			restoreErrs = append(restoreErrs, "skill: "+e.Error())
+		}
+		if len(restoreErrs) > 0 {
+			return fmt.Errorf("write: %w; restore failed: %s", err, stringsJoin(restoreErrs, "; "))
+		}
 		return err
 	}
 	return nil
+}
+
+func stringsJoin(parts []string, sep string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += sep
+		}
+		out += p
+	}
+	return out
 }

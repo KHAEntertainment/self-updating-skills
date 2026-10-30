@@ -101,6 +101,15 @@ func planSkill(dr Drift, runner string) SkillPlan {
 				break
 			}
 		}
+		// A no-change skill with a missing docs baseline still carries an
+		// unverified snapshot (check reports CONTENT-LAG); give the lag a
+		// visible way out.
+		for _, d := range dr.Docs {
+			if d.VerifiedSHA == "" {
+				sp.Reason = combineReasons(sp.Reason, "missing docs baseline — run: upkeep poll --seed-docs")
+				break
+			}
+		}
 		return sp
 	}
 	// e. auto-advance setting (default "patch" when unset; any other

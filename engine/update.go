@@ -14,6 +14,8 @@ type UpdateOptions struct {
 	DryRun bool
 	// Runner is the owner runner ("ci" or "local"; default "local").
 	Runner string
+	// StatePath is the SQLite state database path ("" = default).
+	StatePath string
 }
 
 // UpdateResult is the outcome of an update.
@@ -28,27 +30,30 @@ type UpdateResult struct {
 }
 
 // Update runs the full update cycle for dirs: lease → poll → plan → apply
-// → run record → release. The lease is taken before any work and held for
-// the whole cycle, so the plan cannot be computed against state another
-// writer is mutating. In dry-run mode nothing is persisted and no database
-// is created.
+// → run record → release. One lease covers the whole cycle, so the plan
+// cannot be computed against state another writer is mutating; ownership is
+// renewed before every skill's writes. In dry-run mode nothing is persisted
+// and no database is created.
 func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResult, error) {
 	if opts.Runner == "" {
 		opts.Runner = "local"
 	}
 	if opts.DryRun {
-		drift, err := Poll(ctx, dirs, PollOptions{Runner: opts.Runner}, nil)
+		drift, err := pollDryRun(ctx, dirs, PollOptions{Runner: opts.Runner})
 		if err != nil {
-			return nil, err
+			return nil, &Error{Op: "poll", Path: opts.StatePath, Err: err}
 		}
 		plan, err := Plan(ctx, drift, opts.Runner)
 		if err != nil {
-			return nil, err
+			return nil, &Error{Op: "plan", Path: opts.StatePath, Err: err}
 		}
 		return &UpdateResult{Plan: plan}, nil
 	}
 
-	path := store.DefaultStatePath()
+	path := opts.StatePath
+	if path == "" {
+		path = store.DefaultStatePath()
+	}
 	st, err := store.Open(path)
 	if err != nil {
 		return nil, &Error{Op: "open store", Path: path, Err: err}
@@ -63,49 +68,56 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 	if !ok {
 		return &UpdateResult{SkippedLease: true}, nil
 	}
-	released := false
+
+	// F6: every path after StartRun finishes the run, outcome=failed with
+	// the error. The defer closes the run no matter how we return.
+	outcome := "failed"
+	var report string
+	runID := int64(0)
+	runStarted := false
 	defer func() {
-		if !released {
-			_ = st.ReleaseLease(ctx, "update", holder)
+		_ = st.ReleaseLease(ctx, "update", holder)
+		if runStarted {
+			_ = st.FinishRun(ctx, runID, outcome, report)
 		}
 	}()
 
-	runID, err := st.StartRun(ctx, opts.Runner)
+	runID, err = st.StartRun(ctx, opts.Runner)
 	if err != nil {
 		return nil, &Error{Op: "run", Path: path, Err: err}
 	}
+	runStarted = true
 
-	drift, err := Poll(ctx, dirs, PollOptions{Persist: true, WriteSidecar: true, Runner: opts.Runner}, st)
+	drift, err := pollLocked(ctx, dirs, PollOptions{Runner: opts.Runner}, st, holder)
 	if err != nil {
+		report = reportJSON(map[string]string{"error": err.Error()})
 		return nil, &Error{Op: "poll", Path: path, Err: err}
 	}
 	plan, err := Plan(ctx, drift, opts.Runner)
 	if err != nil {
+		report = reportJSON(map[string]string{"error": err.Error()})
 		return nil, &Error{Op: "plan", Path: path, Err: err}
 	}
-	results, err := applyAdvancedSkills(ctx, st, plan, holder, store.LeaseTTL)
+	results, err := applyPlan(ctx, st, holder, plan)
 	if err != nil {
-		return nil, &Error{Op: "apply", Path: path, Err: err}
+		report = reportJSON(struct {
+			Plan    *UpdatePlan   `json:"plan"`
+			Results []SkillResult `json:"results"`
+		}{plan, results})
+		return &UpdateResult{Plan: plan, Skills: results, RunID: runID, RunOutcome: "failed"}, &Error{Op: "apply", Path: path, Err: err}
 	}
 
-	outcome := "ok"
+	outcome = "ok"
 	for _, r := range results {
 		if r.Status == "failed" {
 			outcome = "failed"
 			break
 		}
 	}
-	report := reportJSON(struct {
+	report = reportJSON(struct {
 		Plan    *UpdatePlan   `json:"plan"`
 		Results []SkillResult `json:"results"`
 	}{plan, results})
-	if err := st.FinishRun(ctx, runID, outcome, report); err != nil {
-		return nil, &Error{Op: "run", Path: path, Err: err}
-	}
-	if err := st.ReleaseLease(ctx, "update", holder); err != nil {
-		return nil, &Error{Op: "lease", Path: path, Err: err}
-	}
-	released = true
 
 	return &UpdateResult{Plan: plan, Skills: results, RunID: runID, RunOutcome: outcome}, nil
 }
