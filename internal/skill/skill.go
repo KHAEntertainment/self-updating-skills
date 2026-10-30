@@ -51,6 +51,9 @@ type Config struct {
 	Verified      string
 	Sources       Sources
 	Frozen        []FrozenEntry
+	// AutoAdvance is the upkeep-auto-advance metadata value: "patch",
+	// "none", or "" when unset (meaning the default "patch").
+	AutoAdvance string
 }
 
 // FrozenMap returns the recorded hashes keyed by frozen-block id.
@@ -294,6 +297,7 @@ func ParseFrontmatter(skPath string) Config {
 	if cfg.Verified == "" {
 		cfg.Verified = flat["upkeep-verified"]
 	}
+	cfg.AutoAdvance = flat["upkeep-auto-advance"]
 	return cfg
 }
 

@@ -130,6 +130,34 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		}
 	}
 
+	// Tracked doc pages: a page whose latest fetched snapshot (recorded by
+	// poll in the sidecar) differs from its verified_sha reports
+	// CONTENT-LAG (D7) — even when no version moved. Pages without a
+	// verified_sha baseline or without a recorded latest_sha carry no
+	// signal (missing evidence never reads as lag).
+	pageLag := 0
+	totalPages, verifiedPages := 0, 0
+	if sc != nil && len(sc.Docs) > 0 {
+		pageNames := make([]string, 0, len(sc.Docs))
+		for n := range sc.Docs {
+			pageNames = append(pageNames, n)
+		}
+		sort.Strings(pageNames)
+		for _, n := range pageNames {
+			d := sc.Docs[n]
+			if d.LatestSHA == "" {
+				continue
+			}
+			totalPages++
+			if d.VerifiedSHA != "" && d.VerifiedSHA == d.LatestSHA {
+				verifiedPages++
+				continue
+			}
+			pageLag++
+			items = append(items, Item{Kind: "CONTENT-LAG", Line: fmt.Sprintf("CONTENT-LAG page:%s  verified %s → current %s", n, d.VerifiedSHA, d.LatestSHA)})
+		}
+	}
+
 	dateItems, err := scanDates(skillDir, cfg)
 	if err != nil {
 		return Report{}, err
@@ -239,6 +267,9 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 	if drift > 0 {
 		parts = append(parts, fmt.Sprintf("drift=%d", drift))
 	}
+	if totalPages > 0 {
+		parts = append(parts, fmt.Sprintf("pages=%d/%d verified", verifiedPages, totalPages))
+	}
 	summary := strings.Join(parts, ", ")
 	if summary == "" {
 		summary = "no pins, dates, or frozen blocks configured"
@@ -250,9 +281,10 @@ func Compute(ctx context.Context, cfg skill.Config, threshold *int, skillDir str
 		verdict = "TAMPERED"
 	case stalePins > 0 || staleDates > 0 || drift > 0:
 		verdict = "STALE"
-	case lagPins > 0:
+	case lagPins > 0 || pageLag > 0:
 		// CONTENT-LAG sits between STALE and FRESH (D7): the upstream
-		// version moved but the content is verified against an older one.
+		// version moved or a tracked snapshot changed, but the content is
+		// verified against an older state.
 		verdict = "CONTENT-LAG"
 	case len(parts) == 0:
 		verdict = "UNKNOWN"
