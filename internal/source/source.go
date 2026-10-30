@@ -7,6 +7,7 @@ package source
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"regexp"
@@ -31,6 +32,13 @@ var (
 // ResolveCurrent returns the current upstream version for a pin, or ""
 // when the lookup fails (mirroring the script's UNKNOWN path).
 func ResolveCurrent(ctx context.Context, pin skill.Pin) string {
+	cur, _ := ResolveCurrentE(ctx, pin)
+	return cur
+}
+
+// ResolveCurrentE is ResolveCurrent with the lookup error surfaced, so the
+// updater can distinguish a failed poll from an unchanged one.
+func ResolveCurrentE(ctx context.Context, pin skill.Pin) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, lookupTimeout)
 	defer cancel()
 
@@ -42,23 +50,23 @@ func ResolveCurrent(ctx context.Context, pin skill.Pin) string {
 		}
 		url := "https://github.com/" + repo + ".git"
 		if shaPinRe.MatchString(pin.Version) {
-			out, ok := run(cctx, "git", "ls-remote", url, "HEAD")
-			if !ok {
-				return ""
+			out, err := run(cctx, "git", "ls-remote", url, "HEAD")
+			if err != nil {
+				return "", err
 			}
 			fields := strings.Fields(out)
 			if len(fields) == 0 {
-				return ""
+				return "", fmt.Errorf("git ls-remote returned no HEAD")
 			}
 			cur := fields[0]
 			if l := len(pin.Version); l < len(cur) {
 				cur = cur[:l]
 			}
-			return cur
+			return cur, nil
 		}
-		out, ok := run(cctx, "git", "ls-remote", "--tags", "--refs", url)
-		if !ok {
-			return ""
+		out, err := run(cctx, "git", "ls-remote", "--tags", "--refs", url)
+		if err != nil {
+			return "", err
 		}
 		var tags []string
 		for _, line := range strings.Split(out, "\n") {
@@ -78,29 +86,29 @@ func ResolveCurrent(ctx context.Context, pin skill.Pin) string {
 			useTags = tags
 		}
 		if len(useTags) == 0 {
-			return ""
+			return "", fmt.Errorf("no tags found for %s", url)
 		}
 		sort.SliceStable(useTags, func(i, j int) bool { return VerCmp(useTags[i], useTags[j]) < 0 })
-		return leadingVRe.ReplaceAllString(useTags[len(useTags)-1], "")
+		return leadingVRe.ReplaceAllString(useTags[len(useTags)-1], ""), nil
 	default:
-		out, ok := run(cctx, "npm", "view", pin.Name, "version")
-		if !ok {
-			return ""
+		out, err := run(cctx, "npm", "view", pin.Name, "version")
+		if err != nil {
+			return "", err
 		}
-		return strings.TrimSpace(out)
+		return strings.TrimSpace(out), nil
 	}
 }
 
 // run executes a command via PATH lookup, discards stderr (like the script's
 // stderr=subprocess.DEVNULL), and returns stdout.
-func run(ctx context.Context, name string, args ...string) (string, bool) {
+func run(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stderr = io.Discard
 	out, err := cmd.Output()
 	if err != nil {
-		return "", false
+		return "", err
 	}
-	return string(out), true
+	return string(out), nil
 }
 
 type verPart struct {
