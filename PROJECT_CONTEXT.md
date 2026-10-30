@@ -29,7 +29,7 @@
 
 - **Last updated**: 2026-10-27
 - **Current iteration goal**: Skill Engine — replace the scheduled Markdown-editing agent with a deterministic Go updater, agent update as fallback. Tracking issue: #1. Five rollout phases, one Issue each.
-- **Open PRs**: #10 skill engine Phase 2 (generated regions, sidecar, lossless render)
+- **Open PRs**: #13 skill engine Phase 3 (deterministic updater: poll, auto-advance, CONTENT-LAG, lease); #10 skill engine Phase 2 (generated regions, sidecar, lossless render) merged
 - **Known tech debt**: see the bottom of `docs/feature-log.md`
 
 ---
