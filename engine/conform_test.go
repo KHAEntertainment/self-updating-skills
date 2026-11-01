@@ -20,6 +20,11 @@ func mapGoLines(lines []string) []string {
 		switch {
 		case strings.HasPrefix(l, "CONTENT-LAG pin:"):
 			out[i] = "STALE    " + l[len("CONTENT-LAG "):]
+		case strings.HasPrefix(l, "CONTENT-LAG page:"):
+			// Go-only (the frozen script never reads sidecars). Mapped so a
+			// mixed pin+page lag fixture compares line-for-line on the lines
+			// both implementations produce.
+			out[i] = "STALE    " + l[len("CONTENT-LAG "):]
 		case strings.HasPrefix(l, "VERDICT: CONTENT-LAG "):
 			out[i] = "VERDICT: STALE" + l[len("VERDICT: CONTENT-LAG"):]
 		default:

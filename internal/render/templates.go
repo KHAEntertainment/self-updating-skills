@@ -108,6 +108,7 @@ func (sc *Sidecar) Validate() error {
 		}{
 			{"doc " + n + " name", n},
 			{"doc " + n + " verified_sha", d.VerifiedSHA},
+			{"doc " + n + " latest_sha", d.LatestSHA},
 			{"doc " + n + " verified_at", d.VerifiedAt},
 		} {
 			if err := validateField(f.what, f.val); err != nil {

@@ -12,7 +12,7 @@ const Version = "0.4.0"
 
 var rootCmd = &cobra.Command{
 	Use:     "upkeep",
-	Short:   "Self-updating skill engine (check, render, stamp)",
+	Short:   "Self-updating skill engine (check, render, stamp, poll, update, status)",
 	Version: Version,
 }
 
@@ -21,6 +21,9 @@ func init() {
 	rootCmd.AddCommand(checkCmd)
 	rootCmd.AddCommand(renderCmd)
 	rootCmd.AddCommand(stampCmd)
+	rootCmd.AddCommand(pollCmd)
+	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(statusCmd)
 }
 
 // Execute runs the root command.

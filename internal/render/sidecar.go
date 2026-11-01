@@ -26,9 +26,14 @@ type PinData struct {
 	VerifiedAt  string `json:"verified_at,omitempty"`
 }
 
-// DocData is one verified doc page in the sidecar.
+// DocData is one tracked doc page in the sidecar. VerifiedSHA is the
+// snapshot the content was verified against (moved only by an explicit
+// seed or an advance); LatestSHA is the newest fetched snapshot, recorded
+// by every successful poll — the docs analogue of PinData.LatestSeen
+// (decision P1), and the field `check` compares for CONTENT-LAG.
 type DocData struct {
 	VerifiedSHA string `json:"verified_sha,omitempty"`
+	LatestSHA   string `json:"latest_sha,omitempty"`
 	VerifiedAt  string `json:"verified_at,omitempty"`
 }
 
