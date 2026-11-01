@@ -74,12 +74,26 @@ func (s *Store) AcquireLease(ctx context.Context, name, holder string, ttl time.
 	return true, nil
 }
 
+// ErrLeaseLostRow is returned when a release affects zero rows: the lease
+// row is already gone (expired and taken over, or released elsewhere).
+// Callers surface it — a silent 0-row success would mask lost ownership.
+var ErrLeaseLostRow = errors.New("lease lost: holder not found")
+
 // ReleaseLease releases a lease held by holder. Only the holder may
 // release: the DELETE is scoped by holder, so a stale process can never
-// clear another process's lease.
+// clear another process's lease. Affecting 0 rows returns
+// ErrLeaseLostRow instead of a silent success (L3).
 func (s *Store) ReleaseLease(ctx context.Context, name, holder string) error {
-	if _, err := s.db.ExecContext(ctx, "DELETE FROM lease WHERE name=? AND holder=?", name, holder); err != nil {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM lease WHERE name=? AND holder=?", name, holder)
+	if err != nil {
 		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrLeaseLostRow
 	}
 	return nil
 }

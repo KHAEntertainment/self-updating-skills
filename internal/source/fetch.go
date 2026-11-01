@@ -21,30 +21,31 @@ const maxPageBytes = 5 << 20
 // deferred (https alone is not an SSRF/host boundary).
 var AllowInsecureHTTP string
 
-var pageClient = &http.Client{
-	Timeout: lookupTimeout,
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 10 {
-			return fmt.Errorf("too many redirects")
-		}
-		if req.URL.Scheme != "https" && AllowInsecureHTTP == "" {
-			return fmt.Errorf("redirect to non-https scheme %q refused", req.URL.Scheme)
-		}
-		return nil
-	},
-}
-
-// client returns the page client, lazily relaxing TLS when the test-only
-// seam is enabled.
+// client returns a fresh page client per call with the current seam state,
+// so tests have no order dependence (T1): when the test-only seam is off,
+// the client is the default (https-only, verified TLS); when on, TLS
+// verification is relaxed for httptest.NewTLSServer.
 func client() *http.Client {
-	if AllowInsecureHTTP != "" && pageClient.Transport == nil {
-		pageClient.Transport = &http.Transport{
+	c := &http.Client{
+		Timeout: lookupTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if req.URL.Scheme != "https" && AllowInsecureHTTP == "" {
+				return fmt.Errorf("redirect to non-https scheme %q refused", req.URL.Scheme)
+			}
+			return nil
+		},
+	}
+	if AllowInsecureHTTP != "" {
+		c.Transport = &http.Transport{
 			// Test-only seam: httptest.NewTLSServer certificates are
 			// self-signed. Never enabled in release builds.
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
 		}
 	}
-	return pageClient
+	return c
 }
 
 // regionMarkerRe matches the open and close markers of frozen and generated

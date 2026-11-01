@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -84,16 +85,25 @@ func TestFetchPageHttpsOnly(t *testing.T) {
 		t.Errorf("error = %v, want a non-https refusal", err)
 	}
 
-	// Redirect downgrade https → http refused with seam off.
-	downgrade := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, plain.URL+"/docs/p.md", http.StatusFound)
-	}))
-	defer downgrade.Close()
-	if _, err := FetchPage(context.Background(), downgrade.URL+"/docs", "p", ".md"); err == nil {
+	// Redirect downgrade https → http refused with seam off: exercised
+	// directly on the CheckRedirect policy (no TLS server needed, so this
+	// test has no order dependence on the seam).
+	checkRedirect := client().CheckRedirect
+	via := []*http.Request{{URL: mustURL(plain.URL + "/docs/p.md")}}
+	downgradeReq := &http.Request{URL: mustURL("http://example.invalid/docs/p.md")}
+	if err := checkRedirect(downgradeReq, via); err == nil {
 		t.Fatal("https→http redirect must be refused when the seam is off")
 	} else if !strings.Contains(err.Error(), "redirect") {
 		t.Errorf("error = %v, want a redirect refusal", err)
 	}
+}
+
+func mustURL(s string) *url.URL {
+	u, err := url.Parse(s)
+	if err != nil {
+		panic(err)
+	}
+	return u
 }
 
 func TestFetchPageHttpsSeamOn(t *testing.T) {

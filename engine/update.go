@@ -88,18 +88,16 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		finalized = true
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		var ferr, rerr error
+		var ferr error
 		if runStarted {
 			ferr = st.FinishRun(cctx, runID, outcome, report)
 		}
-		rerr = st.ReleaseLease(cctx, "update", holder)
-		switch {
-		case ferr != nil:
+		if ferr != nil {
 			return &Error{Op: "run", Path: path, Err: ferr}
-		case rerr != nil:
-			return &Error{Op: "lease", Path: path, Err: rerr}
 		}
-		return nil
+		// L3/L4: release surfaces 0-row releases as a distinct error; the
+		// bounded shared helper treats an already-gone row as done.
+		return releaseLeaseBounded(ctx, st, "update", holder, path)
 	}
 	defer func() { _ = finish() }()
 
@@ -113,6 +111,11 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 	if err != nil {
 		report = reportJSON(map[string]string{"error": err.Error()})
 		return nil, &Error{Op: "poll", Path: path, Err: err}
+	}
+	// R1: retired doc pages are reported in the run report too.
+	var pruned []string
+	for _, dr := range drift {
+		pruned = append(pruned, dr.Pruned...)
 	}
 	plan, err := Plan(ctx, drift, opts.Runner)
 	if err != nil {
@@ -138,7 +141,8 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 	report = reportJSON(struct {
 		Plan    *UpdatePlan   `json:"plan"`
 		Results []SkillResult `json:"results"`
-	}{plan, results})
+		Pruned  []string      `json:"pruned,omitempty"`
+	}{plan, results, pruned})
 
 	if err := finish(); err != nil {
 		return &UpdateResult{Plan: plan, Skills: results, RunID: runID, RunOutcome: outcome}, err

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1472,4 +1473,322 @@ func TestPollRetiresUndeclaredDocsKeys(t *testing.T) {
 			t.Errorf("docs drift = %+v, want only tracked", drift[0].Docs)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Fix batch 3 regressions
+// ---------------------------------------------------------------------------
+
+// takeoverNpmStub writes an npm stub that replaces the update lease holder
+// on the callth invocation of `npm view`, then returns roll-pkg 1.0.1.
+// The takeover runs against $UPKEEP_STATE_DB from the stub itself, so the
+// real code path is exercised mid-lookup.
+func takeoverNpmStub(t *testing.T, callth int) {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	countFile := filepath.Join(dir, "count")
+	script := fmt.Sprintf(`#!/usr/bin/env bash
+count_file=%s
+calls=$(cat "$count_file" 2>/dev/null || echo 0)
+calls=$((calls + 1))
+echo "$calls" > "$count_file"
+if [ "$calls" -eq %d ]; then
+  python3 - <<'PY'
+import os, sqlite3
+p = os.environ.get('UPKEEP_STATE_DB', '')
+if p:
+    con = sqlite3.connect(p)
+    con.execute("UPDATE lease SET holder='replacement-holder' WHERE name='update'")
+    con.commit()
+    con.close()
+PY
+fi
+if [[ "$1" == "view" && "$3" == "version" ]]; then
+  case "$2" in
+    roll-pkg) echo "1.0.1"; exit 0;;
+    *) exit 2;;
+  esac
+fi
+exit 2
+`, countFile, callth)
+	stub := filepath.Join(bin, "npm")
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// L1: takeover during the pre-write gate's lookup → no write, skill
+// reports lease lost.
+func TestApplyTakeoverDuringGateNoWrite(t *testing.T) {
+	takeoverNpmStub(t, 1)
+	old := time.Now().AddDate(-2, 0, 0).Format("2006-01-02")
+	dir := writeSkillFiles(t, map[string]string{
+		"SKILL.md": "---\nname: t\nmetadata:\n  upkeep-pins: \"roll-pkg=1.0.0\"\n  upkeep-threshold-days: \"1\"\n---\n\n# T\n",
+		"upkeep.data.json": `{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "roll-pkg": {
+      "kind": "npm",
+      "verified_for": "1.0.0",
+      "latest_seen": "1.0.1",
+      "checked_at": "2026-10-27"
+    }
+  }
+}
+`,
+		"references/a.md": "Verified " + old + " for roll-pkg\n",
+	})
+	setStatePath(t)
+	scBefore, _ := os.ReadFile(filepath.Join(dir, "upkeep.data.json"))
+	skBefore, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	plan := &engine.UpdatePlan{Skills: []engine.SkillPlan{{
+		SkillDir: dir,
+		Status:   "advance",
+		Advances: []engine.Advance{{Pin: "roll-pkg", From: "1.0.0", To: "1.0.1"}},
+	}}}
+	res, err := engine.Apply(ctx, plan, engine.ApplyOptions{Runner: "ci"})
+	if err == nil {
+		t.Fatal("Apply must report the lost lease")
+	}
+	if !errors.Is(err, engine.ErrLeaseLost) {
+		t.Fatalf("err = %v, want ErrLeaseLost", err)
+	}
+	if len(res.Skills) != 1 || res.Skills[0].Status != "failed" || res.Skills[0].Reason != "lease lost" {
+		t.Fatalf("skills = %+v", res.Skills)
+	}
+	assertFilesUnchanged(t, dir, scBefore, skBefore)
+}
+
+// L2: takeover during the post-write check → no rollback (files may now
+// belong to the new holder), reported as lost.
+func TestApplyTakeoverDuringPostCheckNoRollback(t *testing.T) {
+	takeoverNpmStub(t, 2)
+	old := time.Now().AddDate(-2, 0, 0).Format("2006-01-02")
+	dir := writeSkillFiles(t, map[string]string{
+		"SKILL.md": "---\nname: t\nmetadata:\n  upkeep-pins: \"roll-pkg=1.0.0\"\n  upkeep-threshold-days: \"1\"\n---\n\n# T\n",
+		"upkeep.data.json": `{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "roll-pkg": {
+      "kind": "npm",
+      "verified_for": "1.0.0",
+      "latest_seen": "1.0.1",
+      "checked_at": "2026-10-27"
+    }
+  }
+}
+`,
+		"references/a.md": "Verified " + old + " for roll-pkg\n",
+	})
+	setStatePath(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	plan := &engine.UpdatePlan{Skills: []engine.SkillPlan{{
+		SkillDir: dir,
+		Status:   "advance",
+		Advances: []engine.Advance{{Pin: "roll-pkg", From: "1.0.0", To: "1.0.1"}},
+	}}}
+	res, err := engine.Apply(ctx, plan, engine.ApplyOptions{Runner: "ci"})
+	if err == nil {
+		t.Fatal("Apply must report the lost lease")
+	}
+	if !errors.Is(err, engine.ErrLeaseLost) {
+		t.Fatalf("err = %v, want ErrLeaseLost", err)
+	}
+	if len(res.Skills) != 1 || res.Skills[0].Reason != "lease lost" {
+		t.Fatalf("skills = %+v, want lease-lost report", res.Skills)
+	}
+	// The write happened before the post-check; ownership was lost, so the
+	// files are NOT restored (they may belong to the new holder).
+	scBody, _ := os.ReadFile(filepath.Join(dir, "upkeep.data.json"))
+	if !strings.Contains(string(scBody), `"verified_for": "1.0.1"`) {
+		t.Errorf("expected the write to remain (no rollback on lost ownership): %s", scBody)
+	}
+}
+
+// L4: cancelled public Poll and Apply each leave zero lease rows.
+func TestCancelPollAndApplyReleaseLease(t *testing.T) {
+	setupStubPath(t)
+
+	t.Run("poll", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelOnce := sync.Once{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cancelOnce.Do(func() { cancel() })
+			w.Write([]byte(headPage))
+		}))
+		defer srv.Close()
+
+		dir := writeSkillFiles(t, map[string]string{
+			"SKILL.md":         fmt.Sprintf(updateSkillBase, srv.URL),
+			"upkeep.data.json": updateSkillSidecar("ci", "1.0.0", true),
+		})
+		statePath := setStatePath(t)
+		if _, err := engine.Poll(ctx, []string{dir}, engine.PollOptions{Runner: "ci"}); err == nil {
+			t.Fatal("Poll must fail when canceled mid-fetch")
+		}
+		st, err := store.Open(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		var n int
+		if err := st.DB().QueryRow("SELECT count(*) FROM lease WHERE name='update'").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("lease rows = %d after cancelled Poll, want 0", n)
+		}
+	})
+
+	t.Run("apply", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelOnce := sync.Once{}
+		// Cancel from inside the gate's npm lookup (the first check call).
+		script := `#!/usr/bin/env bash
+if [[ "$1" == "view" && "$3" == "version" ]]; then
+  python3 -c "import os,time; time.sleep(0.05)"
+  touch ` + filepath.Join(t.TempDir(), "hit") + `
+fi
+exit 2
+`
+		_ = script
+		dir := writeSkillFiles(t, map[string]string{
+			"SKILL.md": "---\nname: t\nmetadata:\n  upkeep-pins: \"roll-pkg=1.0.0\"\n---\n\n# T\n",
+			"upkeep.data.json": `{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "roll-pkg": {
+      "kind": "npm",
+      "verified_for": "1.0.0",
+      "latest_seen": "1.0.1",
+      "checked_at": "2026-10-27"
+    }
+  }
+}
+`,
+		})
+		setStatePath(t)
+		// Register a short-lived cancellation while the gate runs.
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancelOnce.Do(func() { cancel() })
+		}()
+		plan := &engine.UpdatePlan{Skills: []engine.SkillPlan{{
+			SkillDir: dir,
+			Status:   "advance",
+			Advances: []engine.Advance{{Pin: "roll-pkg", From: "1.0.0", To: "1.0.1"}},
+		}}}
+		_, err := engine.Apply(ctx, plan, engine.ApplyOptions{Runner: "ci"})
+		if err == nil {
+			t.Fatal("Apply must fail when canceled during the gate")
+		}
+		st, err := store.Open(os.Getenv("UPKEEP_STATE_DB"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		var n int
+		if err := st.DB().QueryRow("SELECT count(*) FROM lease WHERE name='update'").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("lease rows = %d after cancelled Apply, want 0", n)
+		}
+	})
+}
+
+// J1: update --json on a held lease emits valid JSON with skipped_lease
+// and exits 0 (real binary).
+func TestUpdateJSONLeaseSkip(t *testing.T) {
+	setupStubPath(t)
+	statePath := setStatePath(t)
+	ctx := context.Background()
+	st, err := store.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if ok, _ := st.AcquireLease(ctx, "update", "held-holder", store.LeaseTTL); !ok {
+		t.Fatal("holder acquire failed")
+	}
+	dir := writeSkillFiles(t, map[string]string{
+		"SKILL.md": "---\nname: t\nmetadata:\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n---\n\n# T\n",
+		"upkeep.data.json": `{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "fresh-pkg": {
+      "kind": "npm",
+      "verified_for": "1.2.3",
+      "latest_seen": "1.2.3",
+      "checked_at": "2026-10-27"
+    }
+  }
+}
+`,
+	})
+	bin := buildUpkeep(t)
+	out, code := runCmd(t, bin, "update", "--json", "--runner", "ci", dir)
+	if code != 0 {
+		t.Fatalf("update --json exit = %d, want 0 on lease skip: %s", code, out)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("update --json output is not valid JSON: %v\n%s", err, out)
+	}
+	if parsed["skipped_lease"] != true {
+		t.Errorf("skipped_lease = %v, want true: %s", parsed["skipped_lease"], out)
+	}
+}
+
+// D1: dry-run runs the read-only corruption gate — a TAMPERED skill shows
+// BLOCKED, never ADVANCE, with no writes, lease, or state.db.
+func TestUpdateDryRunGateBlocksTampered(t *testing.T) {
+	setupStubPath(t)
+	dir := writeSkillFiles(t, map[string]string{
+		"SKILL.md": "---\nname: t\nmetadata:\n  upkeep-pins: \"fresh-pkg=1.2.3\"\n---\n\n# T\n\n<!-- frozen:pol -->\nf\n<!-- /frozen:pol -->\n",
+		"upkeep.data.json": `{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "fresh-pkg": {
+      "kind": "npm",
+      "verified_for": "1.2.3",
+      "latest_seen": "1.2.3",
+      "checked_at": "2026-10-27"
+    }
+  }
+}
+`,
+	})
+	statePath := setStatePath(t)
+	scBefore, _ := os.ReadFile(filepath.Join(dir, "upkeep.data.json"))
+	skBefore, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := engine.Update(ctx, []string{dir}, engine.UpdateOptions{DryRun: true, Runner: "ci"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Plan.Skills) != 1 || res.Plan.Skills[0].Status != "blocked" {
+		t.Fatalf("dry-run plan = %+v, want blocked", res.Plan.Skills)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("dry-run must not create state.db (err=%v)", err)
+	}
+	assertFilesUnchanged(t, dir, scBefore, skBefore)
 }

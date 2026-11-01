@@ -102,6 +102,9 @@ func renderDrift(cmd *cobra.Command, d engine.Drift) {
 		}
 		fmt.Fprintf(out, "  page %s: verified %s latest %s (%s)\n", dd.Page, dd.VerifiedSHA, dd.LatestSHA, state)
 	}
+	for _, p := range d.Pruned {
+		fmt.Fprintf(out, "  page %s: RETIRED (removed from tracked docs)\n", p)
+	}
 }
 
 func init() {

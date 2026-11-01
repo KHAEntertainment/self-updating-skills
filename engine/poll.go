@@ -70,10 +70,12 @@ func Poll(ctx context.Context, dirs []string, opts PollOptions) ([]Drift, error)
 	if !ok {
 		return nil, ErrLeaseHeld
 	}
+	// L4: bounded cancellation-independent, holder-scoped cleanup on every
+	// post-acquisition return.
 	released := false
 	defer func() {
 		if !released {
-			_ = st.ReleaseLease(ctx, "update", holder)
+			_ = releaseLeaseBounded(ctx, st, "update", holder, path)
 		}
 	}()
 
@@ -81,8 +83,8 @@ func Poll(ctx context.Context, dirs []string, opts PollOptions) ([]Drift, error)
 	if err != nil {
 		return nil, &Error{Op: "poll", Path: path, Err: err}
 	}
-	if err := st.ReleaseLease(ctx, "update", holder); err != nil {
-		return nil, &Error{Op: "lease", Path: path, Err: err}
+	if err := releaseLeaseBounded(ctx, st, "update", holder, path); err != nil {
+		return nil, err
 	}
 	released = true
 	return drift, nil
@@ -216,11 +218,6 @@ func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store,
 		dr.Docs = append(dr.Docs, dd)
 	}
 
-	if st == nil {
-		// Dry-run: nothing is ever written.
-		return dr, nil
-	}
-
 	if dr.SkipReason != "" || dr.BlockReason != "" {
 		// No writes of any kind for this skill — sidecar, files, or DB
 		// snapshots (F2). A skipped/blocked skill is untouched.
@@ -229,9 +226,15 @@ func pollOne(ctx context.Context, dir string, opts PollOptions, st *store.Store,
 
 	// Pre-write gate: refuse to write to a skill that is TAMPERED or has
 	// any DRIFT/marker item — render would overwrite a hand edit or a
-	// frozen violation would be masked.
+	// frozen violation would be masked. It runs in dry-run too, so the
+	// preview predicts the executable plan (D1); no writes follow.
 	if err := gatePreWrite(ctx, abs, cfg, sc); err != nil {
 		dr.BlockReason = err.Error()
+		return dr, nil
+	}
+
+	if st == nil {
+		// Dry-run: the gate ran read-only; nothing is ever written.
 		return dr, nil
 	}
 

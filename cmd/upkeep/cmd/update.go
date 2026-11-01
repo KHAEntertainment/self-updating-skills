@@ -49,7 +49,17 @@ database, no lease.`,
 			os.Exit(1)
 		}
 		if res.SkippedLease {
-			fmt.Fprintln(cmd.OutOrStdout(), "skipped: lease held")
+			// J1: --json emits the stable skip shape (valid JSON), like poll;
+			// exit stays 0 for the ordinary contention skip.
+			if updateJSON {
+				b, err := json.MarshalIndent(res, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(b))
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "skipped: lease held")
+			}
 			return nil
 		}
 

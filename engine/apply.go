@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,10 +61,12 @@ func Apply(ctx context.Context, plan *UpdatePlan, opts ApplyOptions) (*ApplyResu
 	if !ok {
 		return &ApplyResult{SkippedLease: true}, nil
 	}
+	// L4: bounded cancellation-independent, holder-scoped cleanup on every
+	// post-acquisition return, shared with Poll and Update.
 	released := false
 	defer func() {
 		if !released {
-			_ = st.ReleaseLease(ctx, "update", holder)
+			_ = releaseLeaseBounded(ctx, st, "update", holder, path)
 		}
 	}()
 
@@ -102,10 +105,16 @@ func applyPlan(ctx context.Context, st *store.Store, holder string, plan *Update
 			results = append(results, SkillResult{SkillDir: sp.SkillDir, Status: sp.Status, Reason: sp.Reason, DraftPins: sp.DraftPins, DraftPages: sp.DraftPages})
 			continue
 		}
-		sr, err := applyOne(ctx, sp, runner)
+		sr, err := applyOne(ctx, st, holder, sp, runner)
 		if err != nil {
 			sr.Status = "failed"
 			sr.Error = err.Error()
+			if errors.Is(err, ErrLeaseLost) {
+				// L2: a lost lease stops the whole run — no further skill
+				// writes.
+				results = append(results, sr)
+				return results, err
+			}
 		}
 		results = append(results, sr)
 	}
@@ -113,10 +122,12 @@ func applyPlan(ctx context.Context, st *store.Store, holder string, plan *Update
 }
 
 // applyOne applies one advance skill: pre-write gate, a full re-run of the
-// per-skill plan decision under the lease (stale plan → skipped), write
-// sidecar → render → check --strict, with full byte restore of both files
-// on any failure. Restore errors are surfaced in the returned error.
-func applyOne(ctx context.Context, sp *SkillPlan, runner string) (SkillResult, error) {
+// per-skill plan decision under the lease (stale plan → skipped), a final
+// renewal immediately before the write (L1), write sidecar → render →
+// check --strict, then ownership verification before acting on the result
+// (L2): ownership held → restore on failure as now; ownership lost → do
+// NOT restore and report lease lost. Restore errors are surfaced.
+func applyOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan, runner string) (SkillResult, error) {
 	sr := SkillResult{SkillDir: sp.SkillDir, Advances: sp.Advances}
 	abs := sp.SkillDir
 	sk := filepath.Join(abs, render.SkillName)
@@ -157,6 +168,19 @@ func applyOne(ctx context.Context, sp *SkillPlan, runner string) (SkillResult, e
 			sr.Reason = fmt.Sprintf("plan stale: pin %s verified_for %q != plan from %q", adv.Pin, p.VerifiedFor, adv.From)
 			return sr, nil
 		}
+	}
+
+	// L1: renew at the last moment — after every gate and lookup, and
+	// immediately before the write. No network call or check happens
+	// between this renewal and the write.
+	ok, err := st.RenewLease(ctx, "update", holder, store.LeaseTTL)
+	if err != nil {
+		return sr, err
+	}
+	if !ok {
+		sr.Status = "failed"
+		sr.Reason = "lease lost"
+		return sr, ErrLeaseLost
 	}
 
 	sidecarPath := filepath.Join(abs, render.SidecarName)
@@ -214,6 +238,17 @@ func applyOne(ctx context.Context, sp *SkillPlan, runner string) (SkillResult, e
 	rep, err := Check(ctx, abs)
 	if err != nil {
 		return fail(err)
+	}
+	// L2: verify ownership before acting on the result. When ownership is
+	// lost, the files may now belong to the new holder — do NOT restore.
+	ok, err = st.RenewLease(ctx, "update", holder, store.LeaseTTL)
+	if err != nil {
+		return sr, err
+	}
+	if !ok {
+		sr.Status = "failed"
+		sr.Reason = "lease lost"
+		return sr, ErrLeaseLost
 	}
 	if rep.Verdict != "FRESH" {
 		return fail(fmt.Errorf("post-write check verdict %s (want FRESH)", rep.Verdict))

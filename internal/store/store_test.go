@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -60,15 +61,19 @@ func TestLeaseAcquireRelease(t *testing.T) {
 	if ok {
 		t.Fatal("second acquire must be refused while the lease is unexpired")
 	}
-	// Only the holder can release.
-	if err := st.ReleaseLease(ctx, "update", "b"); err != nil {
-		t.Fatal(err)
+	// Only the holder can release; a 0-row release is a distinct error
+	// (L3), never a silent success.
+	if err := st.ReleaseLease(ctx, "update", "b"); !errors.Is(err, ErrLeaseLostRow) {
+		t.Fatalf("release by a non-holder = %v, want ErrLeaseLostRow", err)
 	}
 	if ok, _ := st.AcquireLease(ctx, "update", "c", time.Minute); ok {
 		t.Fatal("release by a non-holder must not free the lease")
 	}
 	if err := st.ReleaseLease(ctx, "update", "a"); err != nil {
 		t.Fatal(err)
+	}
+	if err := st.ReleaseLease(ctx, "update", "a"); !errors.Is(err, ErrLeaseLostRow) {
+		t.Fatalf("second release = %v, want ErrLeaseLostRow", err)
 	}
 	ok, err = st.AcquireLease(ctx, "update", "c", time.Minute)
 	if err != nil {
