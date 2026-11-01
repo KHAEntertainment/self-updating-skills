@@ -75,7 +75,7 @@ func Poll(ctx context.Context, dirs []string, opts PollOptions) ([]Drift, error)
 	released := false
 	defer func() {
 		if !released {
-			_ = releaseLeaseBounded(ctx, st, "update", holder, path)
+			releaseLeaseBestEffort(ctx, st, "update", holder, path)
 		}
 	}()
 
@@ -84,7 +84,7 @@ func Poll(ctx context.Context, dirs []string, opts PollOptions) ([]Drift, error)
 		return nil, &Error{Op: "poll", Path: path, Err: err}
 	}
 	if err := releaseLeaseBounded(ctx, st, "update", holder, path); err != nil {
-		return nil, err
+		return drift, err
 	}
 	released = true
 	return drift, nil

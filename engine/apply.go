@@ -66,7 +66,7 @@ func Apply(ctx context.Context, plan *UpdatePlan, opts ApplyOptions) (*ApplyResu
 	released := false
 	defer func() {
 		if !released {
-			_ = releaseLeaseBounded(ctx, st, "update", holder, path)
+			releaseLeaseBestEffort(ctx, st, "update", holder, path)
 		}
 	}()
 
@@ -170,19 +170,6 @@ func applyOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan
 		}
 	}
 
-	// L1: renew at the last moment — after every gate and lookup, and
-	// immediately before the write. No network call or check happens
-	// between this renewal and the write.
-	ok, err := st.RenewLease(ctx, "update", holder, store.LeaseTTL)
-	if err != nil {
-		return sr, err
-	}
-	if !ok {
-		sr.Status = "failed"
-		sr.Reason = "lease lost"
-		return sr, ErrLeaseLost
-	}
-
 	sidecarPath := filepath.Join(abs, render.SidecarName)
 	origSC, err := os.ReadFile(sidecarPath)
 	if err != nil {
@@ -205,7 +192,19 @@ func applyOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan
 		}
 		return nil
 	}
+	// fail is the single rollback path. It verifies lease ownership with a
+	// bounded, cancellation-independent context BEFORE any restore: on
+	// lost or unverifiable ownership the files may now belong to the new
+	// holder, so nothing is restored and the run stops with ErrLeaseLost
+	// (round 4 item 1). This covers every branch that reaches rollback:
+	// Check errors, non-FRESH verdicts, and render/write errors.
 	fail := func(primary error) (SkillResult, error) {
+		owned, oerr := renewLeaseBounded(ctx, st, holder)
+		if oerr != nil || !owned {
+			sr.Status = "failed"
+			sr.Reason = "lease lost"
+			return sr, errors.Join(primary, ErrLeaseLost)
+		}
 		if re := restore(); re != nil {
 			return sr, fmt.Errorf("%v; %w", primary, re)
 		}
@@ -229,6 +228,18 @@ func applyOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan
 	if err != nil {
 		return fail(fmt.Errorf("render refused: %w", err))
 	}
+
+	// L1: renew immediately before render.Apply — after every gate, read
+	// and Build, with no network call or check remaining before the write.
+	ok, err := renewLeaseBounded(ctx, st, holder)
+	if err != nil {
+		return sr, err
+	}
+	if !ok {
+		sr.Status = "failed"
+		sr.Reason = "lease lost"
+		return sr, ErrLeaseLost
+	}
 	if _, _, err := render.Apply(abs, sc, out); err != nil {
 		return fail(err)
 	}
@@ -241,7 +252,7 @@ func applyOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan
 	}
 	// L2: verify ownership before acting on the result. When ownership is
 	// lost, the files may now belong to the new holder — do NOT restore.
-	ok, err = st.RenewLease(ctx, "update", holder, store.LeaseTTL)
+	ok, err = renewLeaseBounded(ctx, st, holder)
 	if err != nil {
 		return sr, err
 	}

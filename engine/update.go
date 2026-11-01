@@ -1,10 +1,10 @@
 package engine
 
 import (
-	"time"
-
 	"context"
+	"errors"
 	"os"
+	"time"
 
 	"github.com/KHAEntertainment/self-updating-skills/internal/store"
 )
@@ -81,7 +81,12 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 	runID := int64(0)
 	runStarted := false
 	finalized := false
-	finish := func() error {
+	// finish attempts BOTH cleanup steps regardless of each other's
+	// outcome (round 4 item 3): FinishRun failure never skips the release.
+	// bestEffort selects the deferred-cleanup variant (suppresses the
+	// already-gone row sentinel); normal completion uses the strict
+	// variant so final lease loss is propagated (round 4 item 2).
+	finish := func(bestEffort bool) error {
 		if finalized {
 			return nil
 		}
@@ -92,14 +97,22 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		if runStarted {
 			ferr = st.FinishRun(cctx, runID, outcome, report)
 		}
-		if ferr != nil {
-			return &Error{Op: "run", Path: path, Err: ferr}
+		var rerr error
+		if bestEffort {
+			releaseLeaseBestEffort(ctx, st, "update", holder, path)
+		} else {
+			rerr = releaseLeaseBounded(ctx, st, "update", holder, path)
 		}
-		// L3/L4: release surfaces 0-row releases as a distinct error; the
-		// bounded shared helper treats an already-gone row as done.
-		return releaseLeaseBounded(ctx, st, "update", holder, path)
+		var errs []error
+		if ferr != nil {
+			errs = append(errs, &Error{Op: "run", Path: path, Err: ferr})
+		}
+		if rerr != nil {
+			errs = append(errs, rerr)
+		}
+		return errors.Join(errs...)
 	}
-	defer func() { _ = finish() }()
+	defer func() { _ = finish(true) }()
 
 	runID, err = st.StartRun(ctx, opts.Runner)
 	if err != nil {
@@ -144,8 +157,10 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		Pruned  []string      `json:"pruned,omitempty"`
 	}{plan, results, pruned})
 
-	if err := finish(); err != nil {
-		return &UpdateResult{Plan: plan, Skills: results, RunID: runID, RunOutcome: outcome}, err
+	if err := finish(false); err != nil {
+		// Round 4 item 2/3: final lost lease or a finalization failure makes
+		// the completion unsuccessful.
+		return &UpdateResult{Plan: plan, Skills: results, RunID: runID, RunOutcome: "failed"}, err
 	}
 	return &UpdateResult{Plan: plan, Skills: results, RunID: runID, RunOutcome: outcome}, nil
 }
