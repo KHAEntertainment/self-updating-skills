@@ -22,7 +22,7 @@ Live page wins on any conflict.
 | `model` | `sonnet` / `opus` / `haiku` / `fable` / full ID / `inherit` |
 | `permissionMode` | `default`, `acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`, `plan` (`manual` = `default`) |
 | `maxTurns` | Turn cap; output is marked partial when hit |
-| `autoCompactWindow` | Lower the auto-compact window for this subagent, `100000` to `1000000` tokens (v2.1.296+); never raises the window set by `CLAUDE_CODE_AUTO_COMPACT_WINDOW` |
+| `autoCompactWindow` | Lower the auto-compact window for this subagent, `100000` to `1000000` tokens (v2.1.296+); ignored when `CLAUDE_CODE_AUTO_COMPACT_WINDOW` supplies a valid window |
 | `skills` | Skills preloaded (full content) at startup |
 | `mcpServers` | Server names or inline configs |
 | `hooks` | Scoped hooks; `Stop` becomes `SubagentStop` |
