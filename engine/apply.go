@@ -75,7 +75,8 @@ func Apply(ctx context.Context, plan *UpdatePlan, opts ApplyOptions) (*ApplyResu
 	if runner == "" {
 		runner = "local"
 	}
-	results, err := applyPlan(ctx, st, holder, plan, runner)
+	// The public Apply has no run record, so no row verdicts are stored.
+	results, err := applyPlan(ctx, st, holder, plan, runner, 0)
 	if err != nil {
 		return &ApplyResult{Skills: results}, err
 	}
@@ -98,16 +99,11 @@ func Apply(ctx context.Context, plan *UpdatePlan, opts ApplyOptions) (*ApplyResu
 // applyPlan executes a plan while the caller holds the update lease. It
 // renews ownership before every skill (writing or not) so a lease lost to
 // expiry takeover stops the whole cycle at once — no further writes for
-// any skill. Individual skill failures continue the cycle.
-func applyPlan(ctx context.Context, st *store.Store, holder string, plan *UpdatePlan, runner string) ([]SkillResult, error) {
-	return applyPlanRun(ctx, st, holder, plan, runner, 0)
-}
-
-// applyPlanRun is applyPlan with the run id that drafted rows' verdicts
-// are recorded under (0 records none: the public Apply has no run). A
-// "draft" skill goes through the drafting gate (draftOne); an "advance"
-// skill through applyOne; every other status is reported as planned.
-func applyPlanRun(ctx context.Context, st *store.Store, holder string, plan *UpdatePlan, runner string, runID int64) ([]SkillResult, error) {
+// any skill. Individual skill failures continue the cycle. A "draft"
+// skill goes through the drafting gate (draftOne), an "advance" skill
+// through applyOne; every other status is reported as planned. Drafted
+// rows' verdicts are recorded under runID (0 records none).
+func applyPlan(ctx context.Context, st *store.Store, holder string, plan *UpdatePlan, runner string, runID int64) ([]SkillResult, error) {
 	results := make([]SkillResult, 0, len(plan.Skills))
 	for i := range plan.Skills {
 		sp := &plan.Skills[i]

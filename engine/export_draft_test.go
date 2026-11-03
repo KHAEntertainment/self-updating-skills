@@ -34,7 +34,7 @@ func ApplyPlanForRun(ctx context.Context, statePath string, plan *UpdatePlan, ru
 	if err != nil {
 		return nil, 0, err
 	}
-	results, aerr := applyPlanRun(ctx, st, holder, plan, runner, runID)
+	results, aerr := applyPlan(ctx, st, holder, plan, runner, runID)
 	outcome := "ok"
 	for _, r := range results {
 		if r.Status == "failed" {
