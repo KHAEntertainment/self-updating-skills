@@ -71,3 +71,44 @@ VALUES(?,?,?,?,?,?,?)`,
 	}
 	return nil
 }
+
+// RowVerdict is one stored redirect-row verdict.
+type RowVerdict struct {
+	RunID       int64  `json:"run_id"`
+	Skill       string `json:"skill"`
+	RowJSON     string `json:"row"`
+	ChecksJSON  string `json:"checks"`
+	Outcome     string `json:"outcome"`
+	Quote       string `json:"quote"`
+	SnapshotSHA string `json:"snapshot_sha"`
+}
+
+// PendingRowVerdicts returns, for every skill, the row verdicts of the
+// most recent run that drafted it, keeping only rows that still need a
+// person: pr, fallback and hard_stop outcomes. A later run that
+// auto-accepted the skill's rows replaces the earlier pending items.
+func (s *Store) PendingRowVerdicts(ctx context.Context) ([]RowVerdict, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT v.run_id, v.skill, v.row_json, v.checks_json, v.outcome, v.quote, v.snapshot_sha
+FROM row_verdicts v
+JOIN (SELECT skill, MAX(run_id) AS run_id FROM row_verdicts GROUP BY skill) latest
+  ON latest.skill = v.skill AND latest.run_id = v.run_id
+WHERE v.outcome IN ('pr', 'fallback', 'hard_stop')
+ORDER BY v.skill, v.rowid`)
+	if err != nil {
+		return nil, fmt.Errorf("pending row verdicts: %w", err)
+	}
+	defer rows.Close()
+	var out []RowVerdict
+	for rows.Next() {
+		var v RowVerdict
+		if err := rows.Scan(&v.RunID, &v.Skill, &v.RowJSON, &v.ChecksJSON, &v.Outcome, &v.Quote, &v.SnapshotSHA); err != nil {
+			return nil, fmt.Errorf("pending row verdicts: %w", err)
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pending row verdicts: %w", err)
+	}
+	return out, nil
+}
