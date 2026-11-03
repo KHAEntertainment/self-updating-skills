@@ -1,6 +1,6 @@
 # Hooks quick reference
 
-Verified against https://code.claude.com/docs/en/hooks.md on 2026-10-24.
+Verified against https://code.claude.com/docs/en/hooks.md on 2026-11-03.
 Live page wins on any conflict. Before writing a hook for an event, read that
 event's "decision control" section in the live page.
 
@@ -29,7 +29,8 @@ event's "decision control" section in the live page.
   subagents.
 
 Entries merge across levels. `allowManagedHooksOnly` (managed) blocks
-user, project, local and plugin hooks.
+user, project, local and plugin hooks, except hooks from plugins
+force-enabled in managed `enabledPlugins`.
 
 ## Config shape
 
@@ -61,8 +62,9 @@ user, project, local and plugin hooks.
 - **2:** blocking error on events that can block; stderr is the reason. JSON
   `allow` can't override it. `PermissionRequest` ignores exit 2 (use the
   `decision` object instead).
-- **Other non-zero:** non-blocking for most events. `WorktreeCreate` and
-  `WorktreeRemove` fail on any non-zero exit.
+- **Other non-zero:** non-blocking for most events. `WorktreeCreate` fails on
+  any non-zero exit; `WorktreeRemove` fails on any non-zero exit only if the
+  directory still exists afterward.
 
 ## JSON output
 

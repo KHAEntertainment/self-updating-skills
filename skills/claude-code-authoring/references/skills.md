@@ -1,6 +1,6 @@
 # Skills quick reference
 
-Verified against https://code.claude.com/docs/en/skills.md on 2026-10-24.
+Verified against https://code.claude.com/docs/en/skills.md on 2026-11-03.
 Live page wins on any conflict.
 
 ## Locations and precedence
@@ -64,5 +64,6 @@ If no placeholder consumes the arguments, they're appended as `ARGUMENTS: ...`.
 - Keep SKILL.md under 500 lines.
 - After compaction, each invoked skill is re-attached with its first 5,000 tokens,
   within a 25,000-token total budget.
-- Personal and project skill edits reload live. Creating a new top-level skills
-  directory needs a restart.
+- Personal and project skill edits reload live. After creating a top-level
+  skills directory that didn't exist when the session started, run
+  `/reload-skills` (and again after each later change there).

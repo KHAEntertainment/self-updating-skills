@@ -1,7 +1,7 @@
 # Plugins quick reference
 
 Verified against https://code.claude.com/docs/en/plugins-reference.md and
-plugin-evals.md on 2026-10-24. Live page wins on any conflict.
+plugin-evals.md on 2026-11-03. Live page wins on any conflict.
 
 ## Layout (auto-discovered)
 
@@ -41,13 +41,18 @@ reference files outside their root.
 
 ## Variables
 
-- **`${CLAUDE_PLUGIN_ROOT}`:** install dir. It changes on update, and the old
-  version is kept for about 14 days.
+- **`${CLAUDE_PLUGIN_ROOT}`:** absolute path of the installed version. It
+  changes on update, so don't write state there. The `plugins/loading` page
+  says when the old directory is cleaned up.
 - **`${CLAUDE_PLUGIN_DATA}`:** `~/.claude/plugins/data/{id}/`; survives updates.
 - **`${CLAUDE_PROJECT_DIR}`:** the project root.
 
-All three are exported to hooks and to MCP/LSP processes. In shell-form hooks,
-quote them: `"${CLAUDE_PLUGIN_ROOT}"/scripts/x.sh`.
+Hooks and LSP servers get all three as environment variables (hooks also get
+`CLAUDE_PLUGIN_OPTION_<KEY>`); stdio MCP servers get only `CLAUDE_PLUGIN_ROOT`
+and `CLAUDE_PLUGIN_DATA`; monitors and http/sse/ws MCP servers get none. None
+are set in commands Claude runs through the Bash tool. In hooks, prefer exec
+form (`args`, no shell, no quoting); in shell form, quote them:
+`"${CLAUDE_PLUGIN_ROOT}"/scripts/x.sh`.
 
 ## CLI
 

@@ -1,6 +1,6 @@
 # Subagents quick reference
 
-Verified against https://code.claude.com/docs/en/sub-agents.md on 2026-10-24.
+Verified against https://code.claude.com/docs/en/sub-agents.md on 2026-11-03.
 Live page wins on any conflict.
 
 ## Locations (highest priority first)
@@ -22,11 +22,12 @@ Live page wins on any conflict.
 | `model` | `sonnet` / `opus` / `haiku` / `fable` / full ID / `inherit` |
 | `permissionMode` | `default`, `acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`, `plan` (`manual` = `default`) |
 | `maxTurns` | Turn cap; output is marked partial when hit |
+| `autoCompactWindow` | Lower the auto-compact window for this subagent, `100000` to `1000000` tokens (v2.1.296+); never raises the window set by `CLAUDE_CODE_AUTO_COMPACT_WINDOW` |
 | `skills` | Skills preloaded (full content) at startup |
 | `mcpServers` | Server names or inline configs |
 | `hooks` | Scoped hooks; `Stop` becomes `SubagentStop` |
 | `memory` | `user` / `project` / `local` persistent memory |
-| `background` | `true` = always run in the background |
+| `background` | `true` = stay in the background even when Claude asks to wait (subagents Claude spawns from the main conversation already start in the background by default) |
 | `omitClaudeMd` | `true` = skip user, project and local CLAUDE.md |
 | `effort` | `low` … `max` |
 | `isolation` | `worktree` = temporary git worktree |
@@ -36,5 +37,4 @@ Live page wins on any conflict.
 
 Plugin subagents ignore `hooks`, `mcpServers` and `permissionMode`.
 
-The description is prose about when to delegate. The old `<example>` transcript
-blocks from plugin-dev were replaced upstream with prose trigger descriptions.
+The description is prose about when Claude should delegate.
