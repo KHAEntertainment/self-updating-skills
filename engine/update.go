@@ -122,6 +122,9 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		// release error so stored history matches the returned failure;
 		// the new lease holder never touches this run row (keyed by id).
 		// A second FinishRun failure is joined into the returned error too.
+		// The rewrite gets its own bounded context created here: the shared
+		// cctx above may already be expired (releaseLeaseBounded runs its
+		// own 30s timeout, so a slow release can outlive it).
 		if !bestEffort && rerr != nil && ferr == nil && runStarted && outcome != "failed" {
 			failReport := reportJSON(struct {
 				Plan    *UpdatePlan   `json:"plan"`
@@ -129,7 +132,9 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 				Pruned  []string      `json:"pruned,omitempty"`
 				Error   string        `json:"error"`
 			}{plan, results, pruned, rerr.Error()})
-			if ferr2 := st.FinishRun(cctx, runID, "failed", failReport); ferr2 != nil {
+			rcctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer rcancel()
+			if ferr2 := st.FinishRun(rcctx, runID, "failed", failReport); ferr2 != nil {
 				errs = append(errs, &Error{Op: "run", Path: path, Err: ferr2})
 			}
 		}
