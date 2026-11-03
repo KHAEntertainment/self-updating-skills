@@ -1,12 +1,15 @@
 package engine_test
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/KHAEntertainment/self-updating-skills/engine"
+	"github.com/KHAEntertainment/self-updating-skills/internal/redirect"
 	"github.com/KHAEntertainment/self-updating-skills/internal/source"
 )
 
@@ -41,6 +44,14 @@ func TestMain(m *testing.M) {
 	// Test-only HTTP seam for the whole engine suite (plain httptest
 	// hosts). The source package manages its own seam in its tests.
 	source.AllowInsecureHTTP = "engine-test"
+
+	// No live model call is ever possible from the suite: the default
+	// drafter refuses, and the key is cleared for spawned upkeep binaries.
+	// Drafting tests install their own stub with engine.SetDrafter.
+	os.Unsetenv("ANTHROPIC_API_KEY")
+	engine.SetDrafter(func() (redirect.Drafter, error) {
+		return nil, errors.New("live drafting is disabled in tests")
+	})
 
 	code := m.Run()
 	os.RemoveAll(dir)
