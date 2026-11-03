@@ -688,6 +688,12 @@ func TestDraftLeaseLostDuringDraft(t *testing.T) {
 	if !errors.Is(err, engine.ErrLeaseLost) || sr.Status != "failed" {
 		t.Fatalf("got %v %+v", err, sr)
 	}
+	// The loss is caught right after the model call: no row is verified
+	// (no schema fetch or git lookup) under a lease this run no longer
+	// holds.
+	if len(sr.Rows) != 0 {
+		t.Fatalf("rows were verified after the lease was lost: %+v", sr.Rows)
+	}
 	assertUnchanged(t, f, sk0, sc0)
 }
 
