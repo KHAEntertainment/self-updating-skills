@@ -6,7 +6,7 @@ allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/upkeep.sh *)
 metadata:
   author: KHAEntertainment
   version: "0.2.0"
-  upkeep-pins: "@anthropic-ai/claude-code=2.1.310"
+  upkeep-pins: "@anthropic-ai/claude-code=2.1.317"
   upkeep-threshold-days: "60"
   upkeep-source-base: "https://code.claude.com/docs/en"
   upkeep-source-ext: ".md"
@@ -14,7 +14,7 @@ metadata:
   upkeep-source-index: "https://code.claude.com/docs/llms.txt"
   upkeep-source-pages: "skills, hooks, hooks-guide, sub-agents, plugins, plugins-reference, plugin-marketplaces, plugin-evals, plugin-dependencies, settings, settings-reference, permissions, permission-modes, mcp, output-styles, memory, commands"
   upkeep-frozen-live-docs-authority: "sha256:b28d97505fc4121b"
-  upkeep-verified: "2026-10-24"
+  upkeep-verified: "2026-11-03"
 ---
 
 # Claude Code Authoring
@@ -44,11 +44,11 @@ Machine-rendered from `upkeep.data.json` by `upkeep render`; hand edits are repo
 <!-- generated:pins -->
 | package | verified for | latest seen | checked |
 | --- | --- | --- | --- |
-| @anthropic-ai/claude-code | 2.1.310 | 2.1.312 | 2026-10-27 |
+| @anthropic-ai/claude-code | 2.1.317 | 2.1.317 | 2026-11-03 |
 <!-- /generated:pins -->
 
 <!-- generated:freshness -->
-Verified 2026-10-24 for @anthropic-ai/claude-code@2.1.310
+Verified 2026-11-03 for @anthropic-ai/claude-code@2.1.317
 <!-- /generated:freshness -->
 
 ## Workflow
@@ -100,7 +100,7 @@ Verified 2026-10-24 for @anthropic-ai/claude-code@2.1.310
 
 ## Current conventions that old guidance gets wrong
 
-Verified 2026-10-24; distilled from the live pages in the table above (not one
+Verified 2026-11-03; distilled from the live pages in the table above (not one
 single page). Re-verify each bullet against its component page when this date is
 more than ~60 days old or you hit drift — these bullets are exactly the facts
 that rot.

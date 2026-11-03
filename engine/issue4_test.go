@@ -2003,6 +2003,32 @@ END`); err != nil {
 	if holder != "replacement-holder" {
 		t.Errorf("lease holder = %q, want replacement-holder untouched", holder)
 	}
+
+	// N1: the stored run must match the returned failure — outcome failed
+	// and a report recording the release error. The returned result alone
+	// is not enough: the row was finalized as ok before the lost release.
+	if res == nil || res.RunID == 0 {
+		t.Fatal("Update must return the run id")
+	}
+	var runOutcome, runReport string
+	if err := st.DB().QueryRow("SELECT outcome, report_json FROM runs WHERE id=?", res.RunID).Scan(&runOutcome, &runReport); err != nil {
+		t.Fatal(err)
+	}
+	if runOutcome != "failed" {
+		t.Errorf("stored run outcome = %q, want failed", runOutcome)
+	}
+	if !strings.Contains(runReport, "lease lost") {
+		t.Errorf("stored report %q must record the release error", runReport)
+	}
+	stRes, err := engine.Status(ctx, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stRes.Runs) == 0 {
+		t.Error("Status must show the run")
+	} else if stRes.Runs[0].Outcome != "failed" {
+		t.Errorf("Status latest run outcome = %q, want failed", stRes.Runs[0].Outcome)
+	}
 }
 
 // Item 3: FinishRun failure still releases the lease — both cleanup steps
