@@ -25,6 +25,19 @@ A Go engine keeps self-updating skills current without an agent editing Markdown
 | P3 | Each skill has exactly one owner runner (`upkeep-owner: ci` or `local`). The local runner only `git pull --ff-only`s skills it does not own. |
 | P4 | MVP generated regions live in `SKILL.md` only, so one atomic rename covers every write. Regions in `references/` (build-dir + symlink swap) are deferred. |
 
+## Redirect gate inputs (Phase 4)
+
+How decision D8 is fed at runtime. All three metadata keys are optional; a check with no input is reported as "not run", never as a pass.
+
+| Input | Metadata key | Rule |
+| --- | --- | --- |
+| Model | env `UPKEEP_MODEL` (default `claude-opus-5-5`) | Key from `ANTHROPIC_API_KEY` only, never logged or stored. A skill that needs drafting without a key fails ("drafting unavailable: ANTHROPIC_API_KEY not set"). The output is read only through a forced tool call and the row JSON Schema. |
+| S schema (`config-key` rows) | `upkeep-schema-url` | https only, on the skill's `upkeep-source-base`/`upkeep-source-index` host or the package's repository host. Fetched per draft, no cache; its sha256 is recorded with the check. Compiled with no URL loader. |
+| S `flag` rows | none | Deferred: no binary is executed. Recorded as "not run (flag check deferred)". |
+| D git history | `upkeep-docs-repo`, `upkeep-docs-path` | https repository on the package's repository host. Bare clone cached under `<state dir>/repos/`, fetched later; `git log -S <old>` scoped to the page file, with `protocol.allow=never` plus https, no hooks, no external diff or textconv, no inherited `GIT_*` variables. Used when the previous snapshot is not in the state database or does not show `old`. |
+
+Routing per skill: the worst row outcome wins (hard stop > fallback > PR > auto). Only a non-empty draft whose every row auto-accepts is written, through the same lease-guarded write, strict check and rollback as an auto-advance. A row that edits an existing row (same id or same `old`) always goes to a PR.
+
 ## Out of scope (MVP)
 
 Importing existing or third-party skills; generating skills from a URL; the HTTP server and dashboard; a Bubble Tea UI; generated regions in `references/*.md`; FUSE or other virtual filesystems.
