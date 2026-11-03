@@ -81,6 +81,12 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 	runID := int64(0)
 	runStarted := false
 	finalized := false
+	// N1: the reconciliation in finish() rewrites a run row that was
+	// finalized with a non-failed outcome before a lost lease release;
+	// plan/results/pruned are populated before finish(false) is called.
+	var plan *UpdatePlan
+	var results []SkillResult
+	var pruned []string
 	// finish attempts BOTH cleanup steps regardless of each other's
 	// outcome (round 4 item 3): FinishRun failure never skips the release.
 	// bestEffort selects the deferred-cleanup variant (suppresses the
@@ -110,6 +116,28 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		if rerr != nil {
 			errs = append(errs, rerr)
 		}
+		// N1: the strict release can fail after the run was already
+		// finalized with a non-failed outcome (the row says ok while the
+		// returned result fails). Rewrite the row to failed with the
+		// release error so stored history matches the returned failure;
+		// the new lease holder never touches this run row (keyed by id).
+		// A second FinishRun failure is joined into the returned error too.
+		// The rewrite gets its own bounded context created here: the shared
+		// cctx above may already be expired (releaseLeaseBounded runs its
+		// own 30s timeout, so a slow release can outlive it).
+		if !bestEffort && rerr != nil && ferr == nil && runStarted && outcome != "failed" {
+			failReport := reportJSON(struct {
+				Plan    *UpdatePlan   `json:"plan"`
+				Results []SkillResult `json:"results"`
+				Pruned  []string      `json:"pruned,omitempty"`
+				Error   string        `json:"error"`
+			}{plan, results, pruned, rerr.Error()})
+			rcctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer rcancel()
+			if ferr2 := st.FinishRun(rcctx, runID, "failed", failReport); ferr2 != nil {
+				errs = append(errs, &Error{Op: "run", Path: path, Err: ferr2})
+			}
+		}
 		return errors.Join(errs...)
 	}
 	defer func() { _ = finish(true) }()
@@ -126,16 +154,15 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		return nil, &Error{Op: "poll", Path: path, Err: err}
 	}
 	// R1: retired doc pages are reported in the run report too.
-	var pruned []string
 	for _, dr := range drift {
 		pruned = append(pruned, dr.Pruned...)
 	}
-	plan, err := Plan(ctx, drift, opts.Runner)
+	plan, err = Plan(ctx, drift, opts.Runner)
 	if err != nil {
 		report = reportJSON(map[string]string{"error": err.Error()})
 		return nil, &Error{Op: "plan", Path: path, Err: err}
 	}
-	results, err := applyPlan(ctx, st, holder, plan, opts.Runner)
+	results, err = applyPlan(ctx, st, holder, plan, opts.Runner)
 	if err != nil {
 		report = reportJSON(struct {
 			Plan    *UpdatePlan   `json:"plan"`
