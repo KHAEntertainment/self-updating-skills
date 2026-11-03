@@ -651,19 +651,32 @@ func TestDraftEditExistingRowGoesToPR(t *testing.T) {
 	assertUnchanged(t, f, sk0, sc0)
 }
 
-// Output that is not schema-valid JSON is never read: fallback.
+// Output that is not schema-valid JSON is never read: fallback. The
+// schema case decodes as JSON, so only the row-schema validation stops it.
 func TestDraftInvalidModelOutputFallsBack(t *testing.T) {
-	f := newCodexFixture(t, fixtureOpts{storePrev: true})
-	useDrafter(t, &stubDrafter{reply: "Sure! " + rowsJSON(renameRow(f))})
-	sk0, sc0 := f.files(t)
-	sr, _, err := runDraft(t, f)
-	if err != nil {
-		t.Fatal(err)
+	cases := map[string]func(f draftFixture) string{
+		"prose around json": func(f draftFixture) string { return "Sure! " + rowsJSON(renameRow(f)) },
+		"schema-invalid kind": func(f draftFixture) string {
+			row := renameRow(f)
+			row["kind"] = "shell"
+			return rowsJSON(row)
+		},
 	}
-	if sr.Status != "fallback" || !strings.HasPrefix(sr.Reason, "invalid model output") {
-		t.Fatalf("got %+v", sr)
+	for name, reply := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newCodexFixture(t, fixtureOpts{storePrev: true})
+			useDrafter(t, &stubDrafter{reply: reply(f)})
+			sk0, sc0 := f.files(t)
+			sr, _, err := runDraft(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sr.Status != "fallback" || !strings.HasPrefix(sr.Reason, "invalid model output") || len(sr.Rows) != 0 {
+				t.Fatalf("got %+v", sr)
+			}
+			assertUnchanged(t, f, sk0, sc0)
+		})
 	}
-	assertUnchanged(t, f, sk0, sc0)
 }
 
 // Q4: a lease lost while the model was drafting stops the run with no
