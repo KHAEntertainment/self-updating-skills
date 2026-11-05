@@ -32,11 +32,13 @@ How decision D8 is fed at runtime. All three metadata keys are optional; a check
 | Input | Metadata key | Rule |
 | --- | --- | --- |
 | Model | env `UPKEEP_MODEL` (default `claude-opus-5-5`) | Key from `ANTHROPIC_API_KEY` only, never logged or stored. A skill that needs drafting without a key fails ("drafting unavailable: ANTHROPIC_API_KEY not set"). The output is read only through a forced tool call and the row JSON Schema. |
-| S schema (`config-key` rows) | `upkeep-schema-url` | https only, on the skill's `upkeep-source-base`/`upkeep-source-index` host or the package's repository host. Fetched per draft, no cache; its sha256 is recorded with the check. Compiled with no URL loader. |
+| S schema (`config-key` rows) | `upkeep-schema-url` | https only, on the skill's `upkeep-source-base`/`upkeep-source-index` host or the package's repository host. Fetched per draft, no cache; its sha256 is recorded with the check. Compiled with no URL loader. Only bare key paths are checked: `new` must resolve to a declared, satisfiable, non-deprecated key (schema-valued `additionalProperties` counts, also beside fixed properties); `old` must be refused by the schema or marked deprecated. A key the schema leaves open is no evidence, and an assignment (`key = value`) is not validated, so S does not run. |
 | S `flag` rows | none | Deferred: no binary is executed. Recorded as "not run (flag check deferred)". |
 | D git history | `upkeep-docs-repo`, `upkeep-docs-path` | https repository on the package's repository host. Bare clone cached under `<state dir>/repos/`, fetched later; `git log -S <old>` scoped to the page file, with `protocol.allow=never` plus https, no hooks, no external diff or textconv, no inherited `GIT_*` variables. Used when the previous snapshot is not in the state database or does not show `old`. |
 
-Routing per skill: the worst row outcome wins (hard stop > fallback > PR > auto). Only a non-empty draft whose every row auto-accepts is written, through the same lease-guarded write, strict check and rollback as an auto-advance. A row that edits an existing row (same id or same `old`) always goes to a PR.
+D's "absent or deprecated now" needs every mention of `old` in the newest page to be the subject of an affirmative deprecation ("is deprecated", "has been deprecated", "(deprecated)", or after a "Deprecated:" label) with no negation or hedge earlier in its sentence; anything else keeps `old` current.
+
+Routing per skill: the worst row outcome wins (hard stop > fallback > PR > auto). A changed page with no auto-accepted row on it also sends the skill to a PR, so `verified_sha` never advances without evidence. Only a non-empty draft whose every row auto-accepts is written, through the same lease-guarded write, strict check and rollback as an auto-advance. A row that edits an existing row (same id or same `old`) always goes to a PR.
 
 ## Out of scope (MVP)
 
