@@ -139,6 +139,16 @@ func draftOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan
 		sr.Outcome = redirect.OutcomeFallback
 		sr.Reason = "invalid model output: " + parseErr
 	}
+	// F1: an all-auto draft may advance a page's verified_sha only when an
+	// accepted row carries evidence from that page. A changed page with no
+	// accepted row sends the skill to a PR, like a zero-row draft.
+	coverage := ""
+	if sr.Outcome == redirect.OutcomeAuto {
+		if p := uncoveredPage(rows, pages); p != "" {
+			sr.Outcome = redirect.OutcomePR
+			coverage = "page " + p + " changed with no accepted row"
+		}
+	}
 	final := sr.Outcome
 	switch sr.Outcome {
 	case redirect.OutcomeHardStop:
@@ -152,7 +162,10 @@ func draftOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan
 		}
 	case redirect.OutcomePR:
 		sr.Status = "pr"
-		if len(rows) > 0 {
+		switch {
+		case coverage != "":
+			sr.Reason = "pr: " + coverage
+		case len(rows) > 0:
 			sr.Reason = "pr: " + firstReason(rows, redirect.OutcomePR)
 		}
 	case redirect.OutcomeAuto:
@@ -405,6 +418,27 @@ func sameStrings(a, b []string) bool {
 	return strings.Join(x, "\x00") == strings.Join(y, "\x00")
 }
 
+// uncoveredPage returns the first changed page (newest snapshot differs
+// from the verified one) that no auto-accepted row quotes, or "".
+func uncoveredPage(rows []redirect.RowResult, pages []draftedPage) string {
+	for _, p := range pages {
+		if p.latestSHA == p.verifiedSHA {
+			continue
+		}
+		covered := false
+		for _, r := range rows {
+			if r.Outcome == redirect.OutcomeAuto && r.Row.Page == p.name {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return p.name
+		}
+	}
+	return ""
+}
+
 func firstReason(rows []redirect.RowResult, outcome string) string {
 	for _, r := range rows {
 		if r.Outcome == outcome {
@@ -463,6 +497,21 @@ func saveVerdicts(ctx context.Context, st *store.Store, runID int64, key string,
 		if err := st.SaveRowVerdict(cctx, runID, key, string(b), string(cb), outcome, rr.Row.Quote, rr.SnapshotSHA); err != nil {
 			return err
 		}
+	}
+	// A skill outcome no row carries (all rows auto, but a changed page was
+	// left uncovered) is recorded as one skill-level verdict, so status
+	// lists the pending item.
+	if sr.Outcome != redirect.OutcomeAuto && final == sr.Outcome {
+		for _, rr := range sr.Rows {
+			if rr.Outcome == sr.Outcome {
+				return nil
+			}
+		}
+		b, err := json.Marshal(verdictRow{Reason: sr.Reason})
+		if err != nil {
+			return err
+		}
+		return st.SaveRowVerdict(cctx, runID, key, string(b), "[]", sr.Outcome, "", "")
 	}
 	return nil
 }
