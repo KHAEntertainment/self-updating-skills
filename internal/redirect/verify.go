@@ -84,79 +84,145 @@ func CompileConfigSchema(b []byte) (*ConfigSchema, error) {
 var keyPathRe = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`)
 
 // keyPath extracts a dotted config key path from a row value such as
-// "model_instructions_file", "`features.web_search`" or
-// "model = \"o3\"". ok=false when the value is not a key path.
-func keyPath(v string) ([]string, bool) {
-	v = strings.TrimSpace(v)
-	if k, _, found := strings.Cut(v, "="); found {
-		v = strings.TrimSpace(k)
+// "model_instructions_file" or "`features.web_search`". Only the bare key
+// path form is verifiable: an assignment ("key = value") carries a value
+// this check does not validate, so it is reported as not a key path
+// (assign=true) and S does not run.
+func keyPath(v string) (path []string, assign, ok bool) {
+	v = strings.Trim(strings.TrimSpace(v), "`\"' ")
+	if strings.Contains(v, "=") {
+		return nil, true, false
 	}
-	v = strings.Trim(v, "`\"' ")
 	if !keyPathRe.MatchString(v) {
-		return nil, false
+		return nil, false, false
 	}
-	return strings.Split(v, "."), true
+	return strings.Split(v, "."), false, true
 }
 
-// lookup resolves a key path in the compiled schema. found is true when
-// every segment is a declared property (or matches a declared
-// patternProperties / additionalProperties schema, i.e. a map entry);
-// deprecated is true when the final property is marked deprecated, either
-// with "deprecated": true or a description starting with "Deprecated".
-func (cs *ConfigSchema) lookup(path []string) (found, deprecated bool) {
-	cur := []*jsonschema.Schema{cs.root}
-	var last []*jsonschema.Schema
-	for _, seg := range path {
-		var next []*jsonschema.Schema
-		for _, s := range cur {
-			next = append(next, child(s, seg, 0)...)
-		}
-		if len(next) == 0 {
-			return false, false
-		}
-		cur, last = next, next
-	}
-	for _, s := range last {
-		if isDeprecated(s, 0) {
-			return true, true
-		}
-	}
-	return true, false
-}
+// keyState is what the schema says about one key path.
+type keyState int
+
+const (
+	// keyRejected: the schema refuses the name outright (no declared
+	// property, pattern or additional-properties schema accepts it, and
+	// additionalProperties is false), or it resolves to the false schema.
+	keyRejected keyState = iota
+	// keyOpen: the name is neither declared nor refused (an object with no
+	// additionalProperties constraint, or a shape this walk cannot judge).
+	keyOpen
+	// keyDeclared: the name resolves to a declared, satisfiable schema.
+	keyDeclared
+)
 
 const maxSchemaDepth = 32
 
-// child returns the schemas a property named seg resolves to under s,
-// following $ref and allOf/anyOf/oneOf branches.
-func child(s *jsonschema.Schema, seg string, depth int) []*jsonschema.Schema {
+// lookup resolves a key path in the compiled schema. At every level each
+// applicable schema (following $ref and allOf/anyOf/oneOf) is asked about
+// the next name: a fixed property, then a matching pattern property, then a
+// schema-valued additionalProperties — which applies to unmatched names
+// even when fixed properties exist (a map with named settings beside it).
+// deprecated reports whether a declared leaf is marked deprecated.
+func (cs *ConfigSchema) lookup(path []string) (st keyState, deprecated bool) {
+	cur := []*jsonschema.Schema{cs.root}
+	for _, seg := range path {
+		var next []*jsonschema.Schema
+		open, rejected := false, false
+		for _, s := range cur {
+			for _, e := range expand(s, 0) {
+				if isFalse(e) {
+					rejected = true
+					continue
+				}
+				if p, ok := e.Properties[seg]; ok {
+					next = append(next, p)
+					continue
+				}
+				matched := false
+				for re, p := range e.PatternProperties {
+					if re.MatchString(seg) {
+						next = append(next, p)
+						matched = true
+					}
+				}
+				if matched {
+					continue
+				}
+				switch ap := e.AdditionalProperties.(type) {
+				case *jsonschema.Schema:
+					next = append(next, ap)
+				case bool:
+					if ap {
+						open = true
+					} else {
+						rejected = true
+					}
+				default:
+					// No additionalProperties keyword: only an object
+					// description leaves the name open; a pure wrapper
+					// ($ref/allOf holder, description) says nothing.
+					if describesObject(e) {
+						open = true
+					}
+				}
+			}
+		}
+		var live []*jsonschema.Schema
+		for _, n := range next {
+			if isFalse(n) {
+				// A name whose schema is false can hold no value.
+				rejected = true
+				continue
+			}
+			live = append(live, n)
+		}
+		switch {
+		case len(live) > 0:
+			cur = live
+		case open || !rejected:
+			return keyOpen, false
+		default:
+			return keyRejected, false
+		}
+	}
+	for _, s := range cur {
+		if isDeprecated(s, 0) {
+			return keyDeclared, true
+		}
+	}
+	return keyDeclared, false
+}
+
+// expand returns s plus every schema it applies through $ref and
+// allOf/anyOf/oneOf, depth-bounded.
+func expand(s *jsonschema.Schema, depth int) []*jsonschema.Schema {
 	if s == nil || depth > maxSchemaDepth {
 		return nil
 	}
-	var out []*jsonschema.Schema
-	if p, ok := s.Properties[seg]; ok {
-		out = append(out, p)
-	}
-	if len(out) == 0 {
-		for re, p := range s.PatternProperties {
-			if re.MatchString(seg) {
-				out = append(out, p)
-			}
-		}
-	}
-	if len(out) == 0 && len(s.Properties) == 0 {
-		// A map type (no fixed properties): additionalProperties with a
-		// schema accepts any entry name.
-		if ap, ok := s.AdditionalProperties.(*jsonschema.Schema); ok {
-			out = append(out, ap)
-		}
-	}
-	out = append(out, child(s.Ref, seg, depth+1)...)
+	out := []*jsonschema.Schema{s}
+	out = append(out, expand(s.Ref, depth+1)...)
 	for _, groups := range [][]*jsonschema.Schema{s.AllOf, s.AnyOf, s.OneOf} {
 		for _, g := range groups {
-			out = append(out, child(g, seg, depth+1)...)
+			out = append(out, expand(g, depth+1)...)
 		}
 	}
 	return out
+}
+
+func isFalse(s *jsonschema.Schema) bool { return s != nil && s.Bool != nil && !*s.Bool }
+
+// describesObject reports whether s itself constrains object members.
+func describesObject(s *jsonschema.Schema) bool {
+	if len(s.Properties) > 0 || len(s.PatternProperties) > 0 {
+		return true
+	}
+	if s.Types != nil {
+		for _, t := range s.Types.ToStrings() {
+			if t == "object" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isDeprecated(s *jsonschema.Schema, depth int) bool {
@@ -177,10 +243,12 @@ func isDeprecated(s *jsonschema.Schema, depth int) bool {
 	return false
 }
 
-// CheckS is the schema check. config-key rows: new resolves to a declared,
-// non-deprecated key in the harness schema, and old does not resolve or is
-// deprecated. flag rows: deferred in this release (no binary is executed).
-// Other kinds: not applicable.
+// CheckS is the schema check. config-key rows: new is a bare key path that
+// resolves to a declared, satisfiable, non-deprecated key in the harness
+// schema, and old is a bare key path the schema definitively refuses or
+// marks deprecated. A key the schema leaves open (neither declared nor
+// refused) is never evidence either way. flag rows: deferred (no binary is
+// executed). Other kinds: not applicable.
 func CheckS(r Row, cs *ConfigSchema, schemaErr string) Check {
 	switch r.Kind {
 	case KindFlag:
@@ -195,29 +263,39 @@ func CheckS(r Row, cs *ConfigSchema, schemaErr string) Check {
 		}
 		return notRun("S", schemaErr)
 	}
+	newPath, newAssign, ok := keyPath(r.New)
+	if newAssign {
+		return notRun("S", "assignment values are not validated; only a bare key path is checked")
+	}
 	c := Check{Name: "S", Ran: true}
-	newPath, ok := keyPath(r.New)
 	if !ok {
 		c.Detail = fmt.Sprintf("new %q is not a config key path (schema %s)", r.New, cs.SHA)
 		return c
 	}
-	oldPath, ok := keyPath(r.Old)
+	oldPath, oldAssign, ok := keyPath(r.Old)
+	if oldAssign {
+		return notRun("S", "assignment values are not validated; only a bare key path is checked")
+	}
 	if !ok {
 		c.Detail = fmt.Sprintf("old %q is not a config key path (schema %s)", r.Old, cs.SHA)
 		return c
 	}
-	nf, nd := cs.lookup(newPath)
-	if !nf || nd {
-		c.Detail = fmt.Sprintf("new key is not a current key in schema %s", cs.SHA)
+	ns, nd := cs.lookup(newPath)
+	if ns != keyDeclared || nd {
+		c.Detail = fmt.Sprintf("new key is not a declared current key in schema %s", cs.SHA)
 		return c
 	}
-	of, od := cs.lookup(oldPath)
-	if of && !od {
-		c.Detail = fmt.Sprintf("old key is still a current key in schema %s", cs.SHA)
+	os, od := cs.lookup(oldPath)
+	switch {
+	case os == keyRejected:
+		c.Detail = fmt.Sprintf("new key declared, old key refused by schema %s", cs.SHA)
+	case os == keyDeclared && od:
+		c.Detail = fmt.Sprintf("new key declared, old key deprecated in schema %s", cs.SHA)
+	default:
+		c.Detail = fmt.Sprintf("old key is still accepted by schema %s", cs.SHA)
 		return c
 	}
 	c.Pass = true
-	c.Detail = fmt.Sprintf("new key declared, old key %s in schema %s", map[bool]string{true: "deprecated", false: "absent"}[of], cs.SHA)
 	return c
 }
 
@@ -235,8 +313,8 @@ type History struct {
 
 // CheckD is the doc-history check: old was present before (in the
 // previous snapshot or in upstream git history), old is absent from the
-// newest snapshot of the page or every line mentioning it says deprecated,
-// and new is present now.
+// newest snapshot of the page or every mention of it is affirmatively
+// marked deprecated, and new is present now.
 func CheckD(r Row, now string, h History) Check {
 	if !h.HasPrevious && !h.GitRan {
 		why := "no previous snapshot or git history"
@@ -252,8 +330,8 @@ func CheckD(r Row, now string, h History) Check {
 		c.Detail = "old not found in the previous snapshot or git history"
 		return c
 	}
-	if strings.Contains(Normalize(now), oldN) && !allDeprecated(now, r.Old) {
-		c.Detail = "old still present and not marked deprecated"
+	if !retiredNow(Normalize(now), oldN) {
+		c.Detail = "old still present and not affirmatively marked deprecated"
 		return c
 	}
 	if !strings.Contains(Normalize(now), Normalize(r.New)) {
@@ -269,18 +347,48 @@ func CheckD(r Row, now string, h History) Check {
 	return c
 }
 
-// allDeprecated reports whether every line of text that mentions old also
-// says "deprecat" (case-insensitive). A mention split across lines counts
-// as a non-deprecated mention.
-func allDeprecated(text, old string) bool {
-	found := false
-	for _, ln := range strings.Split(text, "\n") {
-		if strings.Contains(ln, old) {
-			found = true
-			if !strings.Contains(strings.ToLower(ln), "deprecat") {
-				return false
-			}
-		}
+var (
+	// deprecatedAfter: old is the immediate subject of an affirmative
+	// deprecation ("`--x` is deprecated", "the --x flag has been
+	// deprecated", "--x (deprecated)").
+	deprecatedAfter = regexp.MustCompile("(?i)^[`'\"]*(?:\\s+(?:flag|option|key|setting|field|command|path|directory|variable))?\\s*(?:\\(deprecated\\)|(?:is|are|was|were|has been|have been|is now|are now)\\s+deprecated\\b)")
+	// deprecatedBefore: old directly follows a "Deprecated:" label.
+	deprecatedBefore = regexp.MustCompile("(?i)(?:^|[\\s*_])deprecated[*_]*\\s*[:\\-—]\\s*[`'\"]*$")
+	// hedgeRe: negation or hedging anywhere in the sentence before the
+	// mention makes the evidence ambiguous.
+	hedgeRe = regexp.MustCompile("(?i)\\b(?:not|no|never|without|none|nor|will|would|may|might|could|should|planned|plan|soon|future|until|unless|if|whether|maybe)\\b|n't\\b")
+	// sentenceEnd ends a sentence: terminal punctuation followed by a
+	// space, so dots inside identifiers do not split.
+	sentenceEnd = regexp.MustCompile(`[.!?;] `)
+)
+
+// retiredNow reports whether old (normalized) is absent from text
+// (normalized), or every occurrence is affirmatively marked deprecated in
+// its own sentence with no negation or hedge before it. Any occurrence
+// that is not clearly deprecated — including an occurrence that a
+// line-wrap split in the raw page — keeps old current.
+func retiredNow(text, old string) bool {
+	if old == "" {
+		return false
 	}
-	return found
+	for from := 0; ; {
+		k := strings.Index(text[from:], old)
+		if k < 0 {
+			return true
+		}
+		start := from + k
+		end := start + len(old)
+		sStart := 0
+		for _, m := range sentenceEnd.FindAllStringIndex(text[:start], -1) {
+			sStart = m[1]
+		}
+		prefix := text[sStart:start]
+		if hedgeRe.MatchString(prefix) {
+			return false
+		}
+		if !deprecatedAfter.MatchString(text[end:]) && !deprecatedBefore.MatchString(prefix) {
+			return false
+		}
+		from = end
+	}
 }

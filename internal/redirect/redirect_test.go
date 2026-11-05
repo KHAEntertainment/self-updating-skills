@@ -160,15 +160,78 @@ func TestCheckSConfigKey(t *testing.T) {
 	if c := CheckS(r, cs, ""); c.Pass {
 		t.Fatal("unknown nested key passed S")
 	}
-	// TOML assignment form and backticks are accepted as key paths.
-	r.Old, r.New = "`experimental_instructions_file`", "model_instructions_file = \"/x\""
+	// Backticks around a bare key path are accepted.
+	r.Old, r.New = "`experimental_instructions_file`", "`model_instructions_file`"
 	if c := CheckS(r, cs, ""); !c.Pass {
-		t.Fatalf("assignment form must pass: %+v", c)
+		t.Fatalf("backticked key path must pass: %+v", c)
+	}
+	// R2: an assignment carries a value S does not validate — never a pass,
+	// whether the value is valid or not.
+	for _, v := range []string{"model_instructions_file = 123", "model_instructions_file = \"/x\""} {
+		r.Old, r.New = "experimental_instructions_file", v
+		if c := CheckS(r, cs, ""); c.Ran || c.Pass {
+			t.Fatalf("assignment %q must not run: %+v", v, c)
+		}
+	}
+	r.Old, r.New = "experimental_instructions_file = 1", "model_instructions_file"
+	if c := CheckS(r, cs, ""); c.Pass {
+		t.Fatalf("assignment old must not pass: %+v", c)
+	}
+	// R1: a map with named settings beside it (AgentsToml: fixed keys plus
+	// additionalProperties → AgentRoleToml). A role's setting is current.
+	r.Old, r.New = "agents.reviewer.config_file", "model_instructions_file"
+	if c := CheckS(r, cs, ""); c.Pass {
+		t.Fatalf("still-valid map entry passed as retired: %+v", c)
+	}
+	r.Old, r.New = "experimental_instructions_file", "agents.reviewer.config_file"
+	if c := CheckS(r, cs, ""); !c.Pass {
+		t.Fatalf("valid map entry rejected as new: %+v", c)
+	}
+	// A role entry refuses unknown settings (AgentRoleToml has
+	// additionalProperties false): retired there.
+	r.Old, r.New = "agents.reviewer.no_such_setting", "agents.reviewer.config_file"
+	if c := CheckS(r, cs, ""); !c.Pass {
+		t.Fatalf("refused role setting must count as retired: %+v", c)
 	}
 	// Not a key path at all.
 	r.Old, r.New = "experimental_instructions_file", "use the new file"
 	if c := CheckS(r, cs, ""); c.Pass {
 		t.Fatal("prose new passed S")
+	}
+}
+
+// R2: a property whose schema is false cannot hold any value, and an
+// object with no additionalProperties constraint leaves unknown names open
+// (never evidence that an old key is retired).
+func TestCheckSFalseAndOpenSchemas(t *testing.T) {
+	cs, err := CompileConfigSchema([]byte(`{
+  "type": "object",
+  "properties": {
+    "dead_key": false,
+    "live_key": {"type": "string"},
+    "open_map": {"type": "object", "properties": {"x": {"type": "string"}}}
+  },
+  "additionalProperties": false
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Row{Kind: KindConfigKey}
+	r.Old, r.New = "gone_key", "dead_key"
+	if c := CheckS(r, cs, ""); c.Pass {
+		t.Fatalf("false-schema new passed: %+v", c)
+	}
+	r.Old, r.New = "dead_key", "live_key"
+	if c := CheckS(r, cs, ""); !c.Pass {
+		t.Fatalf("false-schema old is refused, must pass: %+v", c)
+	}
+	r.Old, r.New = "open_map.anything", "live_key"
+	if c := CheckS(r, cs, ""); c.Pass {
+		t.Fatalf("open (unconstrained) old passed as retired: %+v", c)
+	}
+	r.Old, r.New = "gone_key", "live_key"
+	if c := CheckS(r, cs, ""); !c.Pass {
+		t.Fatalf("refused old must pass: %+v", c)
 	}
 }
 
@@ -200,8 +263,32 @@ func TestCheckD(t *testing.T) {
 	if c := CheckD(r, "Use --modern. --legacy still works.", History{Previous: prev, HasPrevious: true}); c.Pass {
 		t.Fatal("old still present passed D")
 	}
-	if c := CheckD(r, "Use --modern.\n--legacy is deprecated.", History{Previous: prev, HasPrevious: true}); !c.Pass {
-		t.Fatalf("deprecated old must pass: %+v", c)
+	ph := History{Previous: prev, HasPrevious: true}
+	for _, now := range []string{
+		"Use --modern.\n--legacy is deprecated.",
+		"Use --modern. `--legacy` is deprecated and will be removed in 2.0.",
+		"Use --modern. The --legacy flag has been deprecated.",
+		"Use --modern. Deprecated: `--legacy`.",
+		"Use --modern instead of --legacy (deprecated).",
+	} {
+		if c := CheckD(r, now, ph); !c.Pass {
+			t.Errorf("affirmative deprecation %q must pass: %+v", now, c)
+		}
+	}
+	// R3: negated, hedged, unrelated or mixed mentions keep old current.
+	for _, now := range []string{
+		"Use --modern. --legacy is not deprecated.",
+		"Use --modern. No deprecation is planned for --legacy.",
+		"Use --modern. --legacy will be deprecated soon.",
+		"Use --modern. --legacy isn't deprecated yet.",
+		"Use --modern. --legacy still works; --other is deprecated.",
+		"Use --modern. --legacy is deprecated.\nYou can still pass\n--legacy to the server.",
+		"Use --modern. --legacy is\ndeprecated. Run --legacy for now.",
+		"Use --modern. We never said --legacy is deprecated.",
+	} {
+		if c := CheckD(r, now, ph); c.Pass {
+			t.Errorf("non-deprecation %q passed D: %+v", now, c)
+		}
 	}
 	if c := CheckD(r, "Nothing here.", History{Previous: prev, HasPrevious: true}); c.Pass {
 		t.Fatal("new absent passed D")
