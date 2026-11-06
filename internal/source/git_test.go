@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -49,15 +50,15 @@ func TestGitLogSFindsHistory(t *testing.T) {
 	repo := gitFixture(t)
 	cache := t.TempDir()
 	ctx := context.Background()
-	found, err := GitLogS(ctx, cache, repo, "docs/config.md", "--legacy-flag", nil)
+	found, err := GitLogS(ctx, cache, repo, "docs/config.md", "--legacy-flag", nil, nil)
 	if err != nil || !found {
 		t.Fatalf("old flag must be found in history: %v %v", found, err)
 	}
-	found, err = GitLogS(ctx, cache, repo, "docs/config.md", "--never-existed", nil)
+	found, err = GitLogS(ctx, cache, repo, "docs/config.md", "--never-existed", nil, nil)
 	if err != nil || found {
 		t.Fatalf("absent string: %v %v", found, err)
 	}
-	found, err = GitLogS(ctx, cache, repo, "other/path.md", "--legacy-flag", nil)
+	found, err = GitLogS(ctx, cache, repo, "other/path.md", "--legacy-flag", nil, nil)
 	if err != nil || found {
 		t.Fatalf("path scoping: %v %v", found, err)
 	}
@@ -83,7 +84,7 @@ func TestGitLogSRefusesNonHTTPS(t *testing.T) {
 		"ext transport":           "ext::sh -c touch% /tmp/pwned",
 		"empty":                   "",
 	} {
-		if _, err := GitLogS(ctx, t.TempDir(), u, "docs", "x", hosts); err == nil {
+		if _, err := GitLogS(ctx, t.TempDir(), u, "docs", "x", hosts, nil); err == nil {
 			t.Errorf("%s: %q accepted", name, u)
 		}
 	}
@@ -96,7 +97,7 @@ func TestGitLogSIgnoresInheritedGitEnv(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ext-diff-ran")
 	t.Setenv("GIT_EXTERNAL_DIFF", "sh -c 'touch "+marker+"'")
 	t.Setenv("GIT_DIR", t.TempDir())
-	found, err := GitLogS(context.Background(), t.TempDir(), repo, "docs/config.md", "--legacy-flag", nil)
+	found, err := GitLogS(context.Background(), t.TempDir(), repo, "docs/config.md", "--legacy-flag", nil, nil)
 	if err != nil || !found {
 		t.Fatalf("lookup under hostile env: %v %v", found, err)
 	}
@@ -106,7 +107,33 @@ func TestGitLogSIgnoresInheritedGitEnv(t *testing.T) {
 }
 
 func TestGitLogSEmptyNeedle(t *testing.T) {
-	if _, err := GitLogS(context.Background(), t.TempDir(), "https://github.com/o/r.git", "", "", []string{"github.com"}); err == nil || !strings.Contains(err.Error(), "empty") {
+	if _, err := GitLogS(context.Background(), t.TempDir(), "https://github.com/o/r.git", "", "", []string{"github.com"}, nil); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// -S matches substrings: history holding only "--legacy-flag" is a -S hit
+// for "--legacy". The patch-line matcher decides; a whole-identifier
+// matcher must report not found, the default (substring) matcher found.
+func TestGitLogSMatchesPatchLines(t *testing.T) {
+	withLocalGit(t)
+	repo := gitFixture(t)
+	ctx := context.Background()
+	whole := regexp.MustCompile(`(^|[^A-Za-z0-9_.-])--legacy($|[^A-Za-z0-9_-])`)
+	found, err := GitLogS(ctx, t.TempDir(), repo, "docs/config.md", "--legacy", nil, whole.MatchString)
+	if err != nil || found {
+		t.Fatalf("whole-identifier match on --legacy-flag history: %v %v", found, err)
+	}
+	found, err = GitLogS(ctx, t.TempDir(), repo, "docs/config.md", "--legacy", nil, nil)
+	if err != nil || !found {
+		t.Fatalf("default substring match: %v %v", found, err)
+	}
+}
+
+func TestIsPatchChange(t *testing.T) {
+	for line, want := range map[string]bool{"+a": true, "-a": true, "+++ b/x": false, "--- a/x": false, " ctx": false, "": false, "abc123": false} {
+		if got := isPatchChange(line); got != want {
+			t.Errorf("%q: got %v", line, got)
+		}
 	}
 }

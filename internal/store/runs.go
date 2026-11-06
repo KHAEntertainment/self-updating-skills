@@ -72,6 +72,37 @@ VALUES(?,?,?,?,?,?,?)`,
 	return nil
 }
 
+// RowVerdictInput is one verdict for SaveRowVerdicts.
+type RowVerdictInput struct {
+	RowJSON, ChecksJSON, Outcome, Quote, SnapshotSHA string
+}
+
+// SaveRowVerdicts records a skill's verdicts for a run in one
+// transaction: all of them or none, so status never lists half a draft.
+func (s *Store) SaveRowVerdicts(ctx context.Context, runID int64, skill string, vs []RowVerdictInput) (err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save row verdicts: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, v := range vs {
+		if _, err = tx.ExecContext(ctx, `
+INSERT INTO row_verdicts(run_id, skill, row_json, checks_json, outcome, quote, snapshot_sha)
+VALUES(?,?,?,?,?,?,?)`,
+			runID, skill, v.RowJSON, v.ChecksJSON, v.Outcome, v.Quote, v.SnapshotSHA); err != nil {
+			return fmt.Errorf("save row verdicts: %w", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("save row verdicts: %w", err)
+	}
+	return nil
+}
+
 // RowVerdict is one stored redirect-row verdict.
 type RowVerdict struct {
 	RunID       int64  `json:"run_id"`

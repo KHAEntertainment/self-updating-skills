@@ -101,6 +101,10 @@ func draftOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan
 		// Nothing changed to draft from (a version moved with no doc change
 		// the rules could not auto-advance): no model call, zero rows → PR.
 		sr.Reason = "zero rows: no changed page to draft from"
+	} else if n := redirect.InputSize(in); n > redirect.MaxDraftInputBytes {
+		// Too much page text for one bounded model call: no call (and no
+		// API key needed), the skill goes to a PR for a human to draft.
+		sr.Reason = fmt.Sprintf("pr: drafting input exceeds %d bytes; no model call", redirect.MaxDraftInputBytes)
 	} else {
 		d, err := newDrafter()
 		if err != nil {
@@ -296,7 +300,39 @@ func verifyRows(ctx context.Context, st *store.Store, cfg skill.Config, drafted 
 		}
 		out = append(out, redirect.RouteRow(rr, rejected, existing, frozen))
 	}
+	// Two rows rewriting the same old, or a row rewriting the old of a row
+	// already in the sidecar, would leave the redirect table ambiguous: a
+	// human picks (PR). Olds compare in Canon form.
+	for i, r := range out {
+		if r.Outcome != redirect.OutcomeAuto {
+			continue
+		}
+		if dup := duplicateOld(out, i, existing); dup {
+			out[i].Outcome = redirect.OutcomePR
+			out[i].Reason = "duplicate old: " + r.Row.Old
+		}
+	}
 	return out, nil
+}
+
+// duplicateOld reports whether row i's old, in Canon form, is also the old
+// of another drafted row or of an existing sidecar row.
+func duplicateOld(rows []redirect.RowResult, i int, existing []redirect.ExistingRow) bool {
+	old := redirect.Canon(rows[i].Row.Old)
+	if old == "" {
+		return false
+	}
+	for j, r := range rows {
+		if j != i && redirect.Canon(r.Row.Old) == old {
+			return true
+		}
+	}
+	for _, ex := range existing {
+		if redirect.Canon(ex.Old) == old {
+			return true
+		}
+	}
+	return false
 }
 
 // history gathers the D check's evidence: the previous snapshot of the
@@ -304,14 +340,15 @@ func verifyRows(ctx context.Context, st *store.Store, cfg skill.Config, drafted 
 // repository, a `git log -S` lookup in that repository.
 func history(ctx context.Context, st *store.Store, cfg skill.Config, p draftedPage, r redirect.Row, hosts []string) (redirect.History, error) {
 	h := redirect.History{Previous: p.prev, HasPrevious: p.hasPrev && p.verifiedSHA != p.latestSHA}
-	if h.HasPrevious && strings.Contains(redirect.Normalize(h.Previous), redirect.Normalize(r.Old)) {
+	if h.HasPrevious && redirect.ContainsIdentifier(h.Previous, r.Old) {
 		return h, nil
 	}
 	if cfg.Sources.DocsRepo == "" {
 		return h, nil
 	}
 	file := path.Join(strings.Trim(cfg.Sources.DocsPath, "/"), r.Page+cfg.Sources.Ext)
-	found, err := source.GitLogS(ctx, filepath.Join(st.Dir(), "repos"), cfg.Sources.DocsRepo, file, r.Old, hosts)
+	found, err := source.GitLogS(ctx, filepath.Join(st.Dir(), "repos"), cfg.Sources.DocsRepo, file, r.Old, hosts,
+		func(line string) bool { return redirect.ContainsIdentifier(line, r.Old) })
 	if err != nil {
 		h.GitErr = err.Error()
 		return h, nil
@@ -373,6 +410,14 @@ func commitDraft(ctx context.Context, st *store.Store, holder, abs, runner strin
 		if ids[rr.Row.ID] {
 			sr.Status = "skipped"
 			sr.Reason = fmt.Sprintf("plan stale: row %s now exists", rr.Row.ID)
+			return sr, nil
+		}
+	}
+	// Re-assert at the write: no two written rows share an old.
+	for i, rr := range sr.Rows {
+		if duplicateOld(sr.Rows, i, nil) {
+			sr.Status = "skipped"
+			sr.Reason = fmt.Sprintf("refused: duplicate old %q in the draft", rr.Row.Old)
 			return sr, nil
 		}
 	}
@@ -466,37 +511,46 @@ func saveVerdicts(ctx context.Context, st *store.Store, runID int64, key string,
 	if runID == 0 {
 		return nil
 	}
+	vs, err := buildVerdicts(sr, final, parseErr)
+	if err != nil {
+		return err
+	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	if len(sr.Rows) == 0 {
-		vr := verdictRow{Reason: sr.Reason}
-		if parseErr != "" {
-			vr.Reason = "invalid model output: " + parseErr
-		}
-		b, err := json.Marshal(vr)
-		if err != nil {
-			return err
-		}
-		return st.SaveRowVerdict(cctx, runID, key, string(b), "[]", sr.Outcome, "", "")
+	return st.SaveRowVerdicts(cctx, runID, key, vs)
+}
+
+// buildVerdicts lists the verdicts saveVerdicts records, in order.
+func buildVerdicts(sr SkillResult, final, parseErr string) ([]store.RowVerdictInput, error) {
+	skillLevel := func(reason string) (store.RowVerdictInput, error) {
+		b, err := json.Marshal(verdictRow{Reason: reason})
+		return store.RowVerdictInput{RowJSON: string(b), ChecksJSON: "[]", Outcome: sr.Outcome}, err
 	}
+	if len(sr.Rows) == 0 {
+		reason := sr.Reason
+		if parseErr != "" {
+			reason = "invalid model output: " + parseErr
+		}
+		v, err := skillLevel(reason)
+		return []store.RowVerdictInput{v}, err
+	}
+	var vs []store.RowVerdictInput
 	for _, rr := range sr.Rows {
 		row := rr.Row
 		row.Quote = ""
 		b, err := json.Marshal(verdictRow{Row: row, Reason: rr.Reason})
 		if err != nil {
-			return err
+			return nil, err
 		}
 		cb, err := json.Marshal(rr.Checks)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		outcome := rr.Outcome
 		if final == "rolled_back" || final == "skipped" {
 			outcome = final
 		}
-		if err := st.SaveRowVerdict(cctx, runID, key, string(b), string(cb), outcome, rr.Row.Quote, rr.SnapshotSHA); err != nil {
-			return err
-		}
+		vs = append(vs, store.RowVerdictInput{RowJSON: string(b), ChecksJSON: string(cb), Outcome: outcome, Quote: rr.Row.Quote, SnapshotSHA: rr.SnapshotSHA})
 	}
 	// A skill outcome no row carries (all rows auto, but a changed page was
 	// left uncovered) is recorded as one skill-level verdict, so status
@@ -504,14 +558,14 @@ func saveVerdicts(ctx context.Context, st *store.Store, runID int64, key string,
 	if sr.Outcome != redirect.OutcomeAuto && final == sr.Outcome {
 		for _, rr := range sr.Rows {
 			if rr.Outcome == sr.Outcome {
-				return nil
+				return vs, nil
 			}
 		}
-		b, err := json.Marshal(verdictRow{Reason: sr.Reason})
+		v, err := skillLevel(sr.Reason)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return st.SaveRowVerdict(cctx, runID, key, string(b), "[]", sr.Outcome, "", "")
+		vs = append(vs, v)
 	}
-	return nil
+	return vs, nil
 }
