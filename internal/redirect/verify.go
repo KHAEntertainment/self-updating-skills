@@ -99,155 +99,132 @@ func keyPath(v string) (path []string, assign, ok bool) {
 	return strings.Split(v, "."), false, true
 }
 
-// keyState is what the schema says about one key path.
+// The S check is an allowlist (owner decision, PR #18 round 3): it only
+// judges schemas it can read completely. A key path is followed through
+// plain `properties` of plain objects; the final property must resolve to a
+// plain type schema, optionally through local $ref / allOf members that are
+// themselves plain. Every other construct — a false schema, not,
+// anyOf/oneOf, if/then/else, patternProperties, dependentSchemas,
+// $dynamicRef, deprecated, a $ref/allOf on an intermediate object, or
+// resolution deeper than maxRefDepth or cyclic — makes S "not run", which
+// never passes. A non-local $ref cannot compile (the compiler has no URL
+// loader), so it never reaches the walk.
+
+// maxRefDepth bounds $ref/allOf resolution of a leaf.
+const maxRefDepth = 4
+
+// keyState is what the walk established about one key path.
 type keyState int
 
 const (
-	// keyRejected: the schema refuses the name outright (no declared
-	// property, pattern or additional-properties schema accepts it, and
-	// additionalProperties is false), or it resolves to the false schema.
-	keyRejected keyState = iota
-	// keyOpen: the name is neither declared nor refused (an object with no
-	// additionalProperties constraint, or a shape this walk cannot judge).
+	// keyComplex: the path crosses a schema outside the allowlist.
+	keyComplex keyState = iota
+	// keyRejected: a plain closed object (additionalProperties false, no
+	// patternProperties) has no such property.
+	keyRejected
+	// keyOpen: a plain object without additionalProperties: false has no
+	// such property, so the name may still be accepted.
 	keyOpen
-	// keyDeclared: the name resolves to a declared, satisfiable schema.
+	// keyDeclared: every segment is a declared plain property.
 	keyDeclared
 )
 
-const maxSchemaDepth = 32
-
-// lookup resolves a key path in the compiled schema. At every level each
-// applicable schema (following $ref and allOf/anyOf/oneOf) is asked about
-// the next name: a fixed property, then a matching pattern property, then a
-// schema-valued additionalProperties — which applies to unmatched names
-// even when fixed properties exist (a map with named settings beside it).
-// deprecated reports whether a declared leaf is marked deprecated.
-func (cs *ConfigSchema) lookup(path []string) (st keyState, deprecated bool) {
-	cur := []*jsonschema.Schema{cs.root}
-	for _, seg := range path {
-		var next []*jsonschema.Schema
-		open, rejected := false, false
-		for _, s := range cur {
-			for _, e := range expand(s, 0) {
-				if isFalse(e) {
-					rejected = true
-					continue
-				}
-				if p, ok := e.Properties[seg]; ok {
-					next = append(next, p)
-					continue
-				}
-				matched := false
-				for re, p := range e.PatternProperties {
-					if re.MatchString(seg) {
-						next = append(next, p)
-						matched = true
-					}
-				}
-				if matched {
-					continue
-				}
-				switch ap := e.AdditionalProperties.(type) {
-				case *jsonschema.Schema:
-					next = append(next, ap)
-				case bool:
-					if ap {
-						open = true
-					} else {
-						rejected = true
-					}
-				default:
-					// No additionalProperties keyword: only an object
-					// description leaves the name open; a pure wrapper
-					// ($ref/allOf holder, description) says nothing.
-					if describesObject(e) {
-						open = true
-					}
-				}
-			}
-		}
-		var live []*jsonschema.Schema
-		for _, n := range next {
-			if isFalse(n) {
-				// A name whose schema is false can hold no value.
-				rejected = true
-				continue
-			}
-			live = append(live, n)
-		}
-		switch {
-		case len(live) > 0:
-			cur = live
-		case open || !rejected:
-			return keyOpen, false
-		default:
-			return keyRejected, false
-		}
-	}
-	for _, s := range cur {
-		if isDeprecated(s, 0) {
-			return keyDeclared, true
-		}
-	}
-	return keyDeclared, false
+// walkResult is the outcome of following one key path.
+type walkResult struct {
+	state keyState
+	// leafPlain: for keyDeclared, the final property resolves to a plain
+	// type schema; deprecated: that resolution is marked deprecated.
+	leafPlain  bool
+	deprecated bool
 }
 
-// expand returns s plus every schema it applies through $ref and
-// allOf/anyOf/oneOf, depth-bounded.
-func expand(s *jsonschema.Schema, depth int) []*jsonschema.Schema {
-	if s == nil || depth > maxSchemaDepth {
-		return nil
-	}
-	out := []*jsonschema.Schema{s}
-	out = append(out, expand(s.Ref, depth+1)...)
-	for _, groups := range [][]*jsonschema.Schema{s.AllOf, s.AnyOf, s.OneOf} {
-		for _, g := range groups {
-			out = append(out, expand(g, depth+1)...)
+func (cs *ConfigSchema) walk(path []string) walkResult {
+	cur := cs.root
+	for i, seg := range path {
+		if !plainObject(cur) {
+			return walkResult{state: keyComplex}
 		}
-	}
-	return out
-}
-
-func isFalse(s *jsonschema.Schema) bool { return s != nil && s.Bool != nil && !*s.Bool }
-
-// describesObject reports whether s itself constrains object members.
-func describesObject(s *jsonschema.Schema) bool {
-	if len(s.Properties) > 0 || len(s.PatternProperties) > 0 {
-		return true
-	}
-	if s.Types != nil {
-		for _, t := range s.Types.ToStrings() {
-			if t == "object" {
-				return true
+		p, ok := cur.Properties[seg]
+		if !ok {
+			if ap, isBool := cur.AdditionalProperties.(bool); isBool && !ap {
+				return walkResult{state: keyRejected}
 			}
+			return walkResult{state: keyOpen}
 		}
+		if i == len(path)-1 {
+			ok, dep := plainLeaf(p, 0, map[*jsonschema.Schema]bool{})
+			return walkResult{state: keyDeclared, leafPlain: ok, deprecated: dep}
+		}
+		cur = p
 	}
-	return false
+	return walkResult{state: keyComplex}
 }
 
-func isDeprecated(s *jsonschema.Schema, depth int) bool {
-	if s == nil || depth > maxSchemaDepth {
+// plainObject reports whether s is an object the walk may descend through:
+// no boolean schema, no $ref/allOf, no applicator or conditional keyword,
+// no patternProperties, not deprecated.
+func plainObject(s *jsonschema.Schema) bool {
+	if s == nil || s.Bool != nil || s.Ref != nil || len(s.AllOf) > 0 || deprecatedSelf(s) {
 		return false
 	}
-	if s.Deprecated || strings.HasPrefix(strings.ToLower(strings.TrimSpace(s.Description)), "deprecated") {
-		return true
-	}
-	if isDeprecated(s.Ref, depth+1) {
-		return true
-	}
-	for _, g := range s.AllOf {
-		if isDeprecated(g, depth+1) {
-			return true
-		}
-	}
-	return false
+	return !hasForbidden(s)
 }
 
+// hasForbidden reports the keywords the allowlist never accepts anywhere.
+func hasForbidden(s *jsonschema.Schema) bool {
+	return s.Not != nil || len(s.AnyOf) > 0 || len(s.OneOf) > 0 ||
+		s.If != nil || s.Then != nil || s.Else != nil ||
+		len(s.PatternProperties) > 0 || len(s.DependentSchemas) > 0 || len(s.Dependencies) > 0 ||
+		s.DynamicRef != nil || s.RecursiveRef != nil ||
+		s.UnevaluatedProperties != nil || s.PropertyNames != nil
+}
+
+// plainLeaf resolves a leaf property. It is plain when it uses only type,
+// format, description, title, enum, const, default, examples, minLength,
+// maxLength and pattern, plus local $ref / allOf members that are plain in
+// turn, within maxRefDepth and without a cycle. deprecated reports a
+// deprecation mark anywhere in the resolved set.
+func plainLeaf(s *jsonschema.Schema, depth int, seen map[*jsonschema.Schema]bool) (ok, deprecated bool) {
+	if s == nil || s.Bool != nil || depth > maxRefDepth || seen[s] {
+		return false, false
+	}
+	seen[s] = true
+	defer delete(seen, s)
+	if hasForbidden(s) || len(s.Properties) > 0 || s.AdditionalProperties != nil ||
+		len(s.DependentRequired) > 0 || len(s.Required) > 0 || s.MinProperties != nil || s.MaxProperties != nil ||
+		s.Items != nil || s.AdditionalItems != nil || len(s.PrefixItems) > 0 || s.Items2020 != nil ||
+		s.UnevaluatedItems != nil || s.Contains != nil || s.MinItems != nil || s.MaxItems != nil || s.UniqueItems ||
+		s.Maximum != nil || s.Minimum != nil || s.ExclusiveMaximum != nil || s.ExclusiveMinimum != nil || s.MultipleOf != nil ||
+		s.ContentEncoding != nil || s.ContentMediaType != nil || s.ContentSchema != nil {
+		return false, false
+	}
+	deprecated = deprecatedSelf(s)
+	members := append([]*jsonschema.Schema(nil), s.AllOf...)
+	if s.Ref != nil {
+		members = append(members, s.Ref)
+	}
+	for _, m := range members {
+		mok, mdep := plainLeaf(m, depth+1, seen)
+		if !mok {
+			return false, false
+		}
+		deprecated = deprecated || mdep
+	}
+	return true, deprecated
+}
+
+// deprecatedSelf: "deprecated": true, or a description starting with
+// "Deprecated" (how the Codex schema marks retired keys).
+func deprecatedSelf(s *jsonschema.Schema) bool {
+	return s.Deprecated || strings.HasPrefix(strings.ToLower(strings.TrimSpace(s.Description)), "deprecated")
+}
+
+const tooComplex = "schema too complex to verify"
+
 // CheckS is the schema check. config-key rows: new is a bare key path that
-// resolves to a declared, satisfiable, non-deprecated key in the harness
-// schema, and old is a bare key path the schema definitively refuses or
-// marks deprecated. A key the schema leaves open (neither declared nor
-// refused) is never evidence either way. flag rows: deferred (no binary is
+// the allowlisted walk resolves to a declared, plain, non-deprecated leaf,
+// and old is a bare key path a plain closed object refuses, or a declared
+// plain leaf marked deprecated. flag rows: deferred (no binary is
 // executed). Other kinds: not applicable.
 func CheckS(r Row, cs *ConfigSchema, schemaErr string) Check {
 	switch r.Kind {
@@ -263,33 +240,37 @@ func CheckS(r Row, cs *ConfigSchema, schemaErr string) Check {
 		}
 		return notRun("S", schemaErr)
 	}
-	newPath, newAssign, ok := keyPath(r.New)
-	if newAssign {
+	newPath, newAssign, newOK := keyPath(r.New)
+	oldPath, oldAssign, oldOK := keyPath(r.Old)
+	if newAssign || oldAssign {
 		return notRun("S", "assignment values are not validated; only a bare key path is checked")
 	}
 	c := Check{Name: "S", Ran: true}
-	if !ok {
+	if !newOK {
 		c.Detail = fmt.Sprintf("new %q is not a config key path (schema %s)", r.New, cs.SHA)
 		return c
 	}
-	oldPath, oldAssign, ok := keyPath(r.Old)
-	if oldAssign {
-		return notRun("S", "assignment values are not validated; only a bare key path is checked")
-	}
-	if !ok {
+	if !oldOK {
 		c.Detail = fmt.Sprintf("old %q is not a config key path (schema %s)", r.Old, cs.SHA)
 		return c
 	}
-	ns, nd := cs.lookup(newPath)
-	if ns != keyDeclared || nd {
-		c.Detail = fmt.Sprintf("new key is not a declared current key in schema %s", cs.SHA)
-		return c
-	}
-	os, od := cs.lookup(oldPath)
+	nw := cs.walk(newPath)
 	switch {
-	case os == keyRejected:
+	case nw.state == keyComplex, nw.state == keyDeclared && !nw.leafPlain:
+		return notRun("S", tooComplex+" (new key)")
+	case nw.state != keyDeclared:
+		c.Detail = fmt.Sprintf("new key is not declared in schema %s", cs.SHA)
+		return c
+	case nw.deprecated:
+		return notRun("S", "new key is marked deprecated")
+	}
+	ow := cs.walk(oldPath)
+	switch {
+	case ow.state == keyComplex, ow.state == keyDeclared && !ow.leafPlain:
+		return notRun("S", tooComplex+" (old key)")
+	case ow.state == keyRejected:
 		c.Detail = fmt.Sprintf("new key declared, old key refused by schema %s", cs.SHA)
-	case os == keyDeclared && od:
+	case ow.state == keyDeclared && ow.deprecated:
 		c.Detail = fmt.Sprintf("new key declared, old key deprecated in schema %s", cs.SHA)
 	default:
 		c.Detail = fmt.Sprintf("old key is still accepted by schema %s", cs.SHA)
@@ -313,8 +294,10 @@ type History struct {
 
 // CheckD is the doc-history check: old was present before (in the
 // previous snapshot or in upstream git history), old is absent from the
-// newest snapshot of the page or every mention of it is affirmatively
-// marked deprecated, and new is present now.
+// newest snapshot of the page (whitespace-normalized, so a line-wrapped
+// mention still counts as present), and new is present now. Deprecation
+// wording is never evidence (owner decision, PR #18 round 3): a page that
+// still mentions old, in any terms, keeps D unpassed.
 func CheckD(r Row, now string, h History) Check {
 	if !h.HasPrevious && !h.GitRan {
 		why := "no previous snapshot or git history"
@@ -325,70 +308,25 @@ func CheckD(r Row, now string, h History) Check {
 	}
 	c := Check{Name: "D", Ran: true}
 	oldN := Normalize(r.Old)
-	before := (h.HasPrevious && strings.Contains(Normalize(h.Previous), oldN)) || (h.GitRan && h.GitFound)
-	if !before {
+	inPrev := h.HasPrevious && strings.Contains(Normalize(h.Previous), oldN)
+	if oldN == "" || !(inPrev || (h.GitRan && h.GitFound)) {
 		c.Detail = "old not found in the previous snapshot or git history"
 		return c
 	}
-	if !retiredNow(Normalize(now), oldN) {
-		c.Detail = "old still present and not affirmatively marked deprecated"
+	nowN := Normalize(now)
+	if strings.Contains(nowN, oldN) {
+		c.Detail = "old still present in the newest snapshot"
 		return c
 	}
-	if !strings.Contains(Normalize(now), Normalize(r.New)) {
+	if n := Normalize(r.New); n == "" || !strings.Contains(nowN, n) {
 		c.Detail = "new not present in the newest snapshot"
 		return c
 	}
 	c.Pass = true
 	src := "previous snapshot"
-	if !(h.HasPrevious && strings.Contains(Normalize(h.Previous), oldN)) {
+	if !inPrev {
 		src = "git history"
 	}
-	c.Detail = "old found in " + src + "; absent or deprecated now; new present"
+	c.Detail = "old found in " + src + "; absent now; new present"
 	return c
-}
-
-var (
-	// deprecatedAfter: old is the immediate subject of an affirmative
-	// deprecation ("`--x` is deprecated", "the --x flag has been
-	// deprecated", "--x (deprecated)").
-	deprecatedAfter = regexp.MustCompile("(?i)^[`'\"]*(?:\\s+(?:flag|option|key|setting|field|command|path|directory|variable))?\\s*(?:\\(deprecated\\)|(?:is|are|was|were|has been|have been|is now|are now)\\s+deprecated\\b)")
-	// deprecatedBefore: old directly follows a "Deprecated:" label.
-	deprecatedBefore = regexp.MustCompile("(?i)(?:^|[\\s*_])deprecated[*_]*\\s*[:\\-—]\\s*[`'\"]*$")
-	// hedgeRe: negation or hedging anywhere in the sentence before the
-	// mention makes the evidence ambiguous.
-	hedgeRe = regexp.MustCompile("(?i)\\b(?:not|no|never|without|none|nor|will|would|may|might|could|should|planned|plan|soon|future|until|unless|if|whether|maybe)\\b|n't\\b")
-	// sentenceEnd ends a sentence: terminal punctuation followed by a
-	// space, so dots inside identifiers do not split.
-	sentenceEnd = regexp.MustCompile(`[.!?;] `)
-)
-
-// retiredNow reports whether old (normalized) is absent from text
-// (normalized), or every occurrence is affirmatively marked deprecated in
-// its own sentence with no negation or hedge before it. Any occurrence
-// that is not clearly deprecated — including an occurrence that a
-// line-wrap split in the raw page — keeps old current.
-func retiredNow(text, old string) bool {
-	if old == "" {
-		return false
-	}
-	for from := 0; ; {
-		k := strings.Index(text[from:], old)
-		if k < 0 {
-			return true
-		}
-		start := from + k
-		end := start + len(old)
-		sStart := 0
-		for _, m := range sentenceEnd.FindAllStringIndex(text[:start], -1) {
-			sStart = m[1]
-		}
-		prefix := text[sStart:start]
-		if hedgeRe.MatchString(prefix) {
-			return false
-		}
-		if !deprecatedAfter.MatchString(text[end:]) && !deprecatedBefore.MatchString(prefix) {
-			return false
-		}
-		from = end
-	}
 }

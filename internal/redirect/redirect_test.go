@@ -183,15 +183,16 @@ func TestCheckSConfigKey(t *testing.T) {
 	if c := CheckS(r, cs, ""); c.Pass {
 		t.Fatalf("still-valid map entry passed as retired: %+v", c)
 	}
-	r.Old, r.New = "experimental_instructions_file", "agents.reviewer.config_file"
-	if c := CheckS(r, cs, ""); !c.Pass {
-		t.Fatalf("valid map entry rejected as new: %+v", c)
-	}
-	// A role entry refuses unknown settings (AgentRoleToml has
-	// additionalProperties false): retired there.
-	r.Old, r.New = "agents.reviewer.no_such_setting", "agents.reviewer.config_file"
-	if c := CheckS(r, cs, ""); !c.Pass {
-		t.Fatalf("refused role setting must count as retired: %+v", c)
+	// Round 3 allowlist: agents is allOf/$ref to an object, so neither
+	// direction is verifiable — S does not run and never passes.
+	for _, kv := range [][2]string{
+		{"experimental_instructions_file", "agents.reviewer.config_file"},
+		{"agents.reviewer.no_such_setting", "agents.reviewer.config_file"},
+	} {
+		r.Old, r.New = kv[0], kv[1]
+		if c := CheckS(r, cs, ""); c.Ran || c.Pass || !strings.Contains(c.Detail, "too complex") {
+			t.Fatalf("%v: map entry behind allOf/$ref must not run: %+v", kv, c)
+		}
 	}
 	// Not a key path at all.
 	r.Old, r.New = "experimental_instructions_file", "use the new file"
@@ -222,8 +223,8 @@ func TestCheckSFalseAndOpenSchemas(t *testing.T) {
 		t.Fatalf("false-schema new passed: %+v", c)
 	}
 	r.Old, r.New = "dead_key", "live_key"
-	if c := CheckS(r, cs, ""); !c.Pass {
-		t.Fatalf("false-schema old is refused, must pass: %+v", c)
+	if c := CheckS(r, cs, ""); c.Ran || c.Pass {
+		t.Fatalf("false-schema old is outside the allowlist, must not run: %+v", c)
 	}
 	r.Old, r.New = "open_map.anything", "live_key"
 	if c := CheckS(r, cs, ""); c.Pass {
@@ -232,6 +233,60 @@ func TestCheckSFalseAndOpenSchemas(t *testing.T) {
 	r.Old, r.New = "gone_key", "live_key"
 	if c := CheckS(r, cs, ""); !c.Pass {
 		t.Fatalf("refused old must pass: %+v", c)
+	}
+}
+
+// Round 3 allowlist (owner decision): plain properties only; a leaf may
+// reach a plain type schema through local $ref / allOf; everything else is
+// "not run". Includes the round-2 reviewer probes.
+func TestCheckSAllowlist(t *testing.T) {
+	cases := []struct {
+		name, schema string
+		pass         bool
+	}{
+		{"plain leaf", `{"type":"object","properties":{"new_key":{"type":"string"}},"additionalProperties":false}`, true},
+		{"allOf $ref to plain string", `{"type":"object","properties":{"new_key":{"allOf":[{"$ref":"#/$defs/p"}],"description":"x"}},"$defs":{"p":{"type":"string","format":"uri"}},"additionalProperties":false}`, true},
+		{"ref to false (round 2)", `{"type":"object","properties":{"new_key":{"$ref":"#/$defs/dead"}},"$defs":{"dead":false},"additionalProperties":false}`, false},
+		{"allOf false (round 2)", `{"type":"object","properties":{"new_key":{"allOf":[false]}},"additionalProperties":false}`, false},
+		{"patternProperties false (round 2)", `{"type":"object","properties":{"new_key":{"type":"string"}},"patternProperties":{"^new_":false},"additionalProperties":false}`, false},
+		{"allOf $ref to object with patternProperties", `{"type":"object","properties":{"new_key":{"allOf":[{"$ref":"#/$defs/o"}]}},"$defs":{"o":{"type":"object","patternProperties":{"^x":{"type":"string"}}}},"additionalProperties":false}`, false},
+		{"anyOf leaf", `{"type":"object","properties":{"new_key":{"anyOf":[{"type":"string"},{"type":"null"}]}},"additionalProperties":false}`, false},
+		{"not leaf", `{"type":"object","properties":{"new_key":{"type":"string","not":{"const":"x"}}},"additionalProperties":false}`, false},
+		{"if/then leaf", `{"type":"object","properties":{"new_key":{"type":"string","if":{"const":"a"},"then":{"minLength":2}}},"additionalProperties":false}`, false},
+		{"numeric constraint", `{"type":"object","properties":{"new_key":{"type":"integer","minimum":1}},"additionalProperties":false}`, false},
+		{"object leaf", `{"type":"object","properties":{"new_key":{"type":"object","properties":{"a":{"type":"string"}}}},"additionalProperties":false}`, false},
+		{"deep ref chain", `{"type":"object","properties":{"new_key":{"$ref":"#/$defs/a"}},"$defs":{"a":{"$ref":"#/$defs/b"},"b":{"$ref":"#/$defs/c"},"c":{"$ref":"#/$defs/d"},"d":{"$ref":"#/$defs/e"},"e":{"$ref":"#/$defs/f"},"f":{"type":"string"}},"additionalProperties":false}`, false},
+		{"ref cycle", `{"type":"object","properties":{"new_key":{"$ref":"#/$defs/a"}},"$defs":{"a":{"allOf":[{"$ref":"#/$defs/b"}]},"b":{"allOf":[{"$ref":"#/$defs/a"}]}},"additionalProperties":false}`, false},
+		{"deprecated leaf", `{"type":"object","properties":{"new_key":{"type":"string","deprecated":true}},"additionalProperties":false}`, false},
+		{"root with allOf", `{"allOf":[{"type":"object"}],"type":"object","properties":{"new_key":{"type":"string"}},"additionalProperties":false}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cs, err := CompileConfigSchema([]byte(tc.schema))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := CheckS(Row{Kind: KindConfigKey, Old: "old_key", New: "new_key"}, cs, "")
+			if c.Pass != tc.pass {
+				t.Fatalf("pass=%v want %v: %+v", c.Pass, tc.pass, c)
+			}
+			if !tc.pass && c.Ran && !strings.Contains(c.Detail, "not declared") {
+				t.Fatalf("unverifiable schema must not run: %+v", c)
+			}
+		})
+	}
+	// A non-local $ref cannot compile: no URL loader, so S gets a schema
+	// error and does not run.
+	if _, err := CompileConfigSchema([]byte(`{"type":"object","properties":{"k":{"$ref":"https://evil.example/s.json"}}}`)); err == nil {
+		t.Fatal("non-local $ref compiled")
+	}
+	// An intermediate object behind $ref is outside the allowlist.
+	cs, err := CompileConfigSchema([]byte(`{"type":"object","properties":{"t":{"$ref":"#/$defs/t"}},"$defs":{"t":{"type":"object","properties":{"k":{"type":"string"}},"additionalProperties":false}},"additionalProperties":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := CheckS(Row{Kind: KindConfigKey, Old: "gone", New: "t.k"}, cs, ""); c.Ran || c.Pass {
+		t.Fatalf("intermediate $ref must not run: %+v", c)
 	}
 }
 
@@ -257,40 +312,34 @@ func TestCheckD(t *testing.T) {
 	r := Row{Old: "--legacy", New: "--modern"}
 	prev := "Run with --legacy to enable it."
 	now := "Run with --modern to enable it."
-	if c := CheckD(r, now, History{Previous: prev, HasPrevious: true}); !c.Pass {
+	ph := History{Previous: prev, HasPrevious: true}
+	if c := CheckD(r, now, ph); !c.Pass {
 		t.Fatalf("previous snapshot path: %+v", c)
 	}
-	if c := CheckD(r, "Use --modern. --legacy still works.", History{Previous: prev, HasPrevious: true}); c.Pass {
-		t.Fatal("old still present passed D")
-	}
-	ph := History{Previous: prev, HasPrevious: true}
-	for _, now := range []string{
+	// Round 3 (owner decision): any remaining mention of old keeps D
+	// unpassed — deprecation wording is never evidence. Includes the
+	// round-2 reviewer probes and a line-wrapped mention.
+	for _, n := range []string{
+		"Use --modern. --legacy still works.",
 		"Use --modern.\n--legacy is deprecated.",
 		"Use --modern. `--legacy` is deprecated and will be removed in 2.0.",
-		"Use --modern. The --legacy flag has been deprecated.",
 		"Use --modern. Deprecated: `--legacy`.",
-		"Use --modern instead of --legacy (deprecated).",
-	} {
-		if c := CheckD(r, now, ph); !c.Pass {
-			t.Errorf("affirmative deprecation %q must pass: %+v", now, c)
-		}
-	}
-	// R3: negated, hedged, unrelated or mixed mentions keep old current.
-	for _, now := range []string{
 		"Use --modern. --legacy is not deprecated.",
 		"Use --modern. No deprecation is planned for --legacy.",
-		"Use --modern. --legacy will be deprecated soon.",
-		"Use --modern. --legacy isn't deprecated yet.",
-		"Use --modern. --legacy still works; --other is deprecated.",
-		"Use --modern. --legacy is deprecated.\nYou can still pass\n--legacy to the server.",
-		"Use --modern. --legacy is\ndeprecated. Run --legacy for now.",
-		"Use --modern. We never said --legacy is deprecated.",
+		"Use --modern. --legacy was deprecated but is now supported again.",
+		"Use --modern. It is false that --legacy is deprecated.",
+		"Use --modern. --legacy is deprecated? No, it is still supported.",
+		"Use --modern. Is --legacy deprecated? No, it is still supported.",
 	} {
-		if c := CheckD(r, now, ph); c.Pass {
-			t.Errorf("non-deprecation %q passed D: %+v", now, c)
+		if c := CheckD(r, n, ph); c.Pass || !strings.Contains(c.Detail, "still present") {
+			t.Errorf("mention %q passed D: %+v", n, c)
 		}
 	}
-	if c := CheckD(r, "Nothing here.", History{Previous: prev, HasPrevious: true}); c.Pass {
+	wrapped := Row{Old: "legacy mode", New: "modern mode"}
+	if c := CheckD(wrapped, "Use modern mode. Use legacy\n  mode for now.", History{Previous: "Use legacy mode.", HasPrevious: true}); c.Pass {
+		t.Fatalf("line-wrapped mention passed D: %+v", c)
+	}
+	if c := CheckD(r, "Nothing here.", ph); c.Pass {
 		t.Fatal("new absent passed D")
 	}
 	if c := CheckD(r, now, History{Previous: "unrelated", HasPrevious: true}); c.Pass {
