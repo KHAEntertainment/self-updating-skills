@@ -230,3 +230,38 @@ func TestSnapshotOrderABARefetch(t *testing.T) {
 		t.Errorf("latest = %q ok=%v, want sha256:aaa (newest rowid wins)", sha, ok)
 	}
 }
+
+// SaveRowVerdicts is all-or-nothing: a failing insert rolls back the
+// verdicts before it.
+func TestSaveRowVerdictsAtomic(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	runID, err := st.StartRun(ctx, "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `CREATE TRIGGER boom BEFORE INSERT ON row_verdicts
+WHEN NEW.outcome = 'boom' BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+	batch := []RowVerdictInput{
+		{RowJSON: `{"id":"a"}`, ChecksJSON: "[]", Outcome: "pr"},
+		{RowJSON: `{"id":"b"}`, ChecksJSON: "[]", Outcome: "boom"},
+	}
+	if err := st.SaveRowVerdicts(ctx, runID, "skill-a", batch); err == nil {
+		t.Fatal("failing batch saved without error")
+	}
+	var n int
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM row_verdicts`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d verdicts left after a failed batch, want 0", n)
+	}
+	if err := st.SaveRowVerdicts(ctx, runID, "skill-a", batch[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM row_verdicts`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("good batch: n=%d err=%v", n, err)
+	}
+}

@@ -8,8 +8,8 @@
 - **Language**: Go (module `github.com/KHAEntertainment/self-updating-skills`), binary `upkeep`. No cgo; one `goreleaser` build for darwin, linux, windows.
 - **CLI**: Cobra.
 - **State store**: SQLite via `modernc.org/sqlite`; migrations are embedded SQL gated by `PRAGMA user_version`.
-- **Schema validation (check S)**: `github.com/santhosh-tekuri/jsonschema/v6` (v6.0.3 current as of 2026-10-25; Phase 1 pins the exact version in `go.mod`).
-- **Redirect drafting**: `anthropic-sdk-go`; model `claude-opus-5-5`, overridable with `UPKEEP_MODEL`.
+- **Schema validation (check S)**: `github.com/santhosh-tekuri/jsonschema/v6` pinned at v6.0.3 in `go.mod` (Phase 4a).
+- **Redirect drafting**: `github.com/anthropics/anthropic-sdk-go` v1.84.0; model `claude-opus-5-5`, overridable with `UPKEEP_MODEL`.
 - **Later**: Bubble Tea, Huh, Glamour for a terminal UI.
 
 ## Test framework

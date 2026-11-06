@@ -43,3 +43,24 @@ func (s *Store) LatestSnapshot(ctx context.Context, skill, page string) (sha str
 	}
 	return sha, t, true, nil
 }
+
+// SnapshotContent returns the stored text of one (skill, page) snapshot by
+// its sha256, with ok=false when this database never fetched it (a fresh
+// database, or a verified_sha recorded on another machine). Drafting and
+// the Q/D verifiers read snapshots only through this lookup, so evidence
+// is always tied to an exact hash.
+func (s *Store) SnapshotContent(ctx context.Context, skill, page, sha string) (content string, ok bool, err error) {
+	if sha == "" {
+		return "", false, nil
+	}
+	err = s.db.QueryRowContext(ctx,
+		"SELECT content FROM snapshots WHERE skill=? AND page=? AND sha256=? LIMIT 1",
+		skill, page, sha).Scan(&content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("snapshot content: %w", err)
+	}
+	return content, true, nil
+}

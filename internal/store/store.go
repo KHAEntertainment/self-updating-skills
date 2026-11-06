@@ -82,7 +82,8 @@ const LeaseTTL = 30 * time.Minute
 
 // Store wraps the SQLite handle with the engine's state operations.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	dir string
 }
 
 // Open opens (creating if needed) the SQLite database at path and applies
@@ -101,11 +102,15 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, dir: filepath.Dir(path)}, nil
 }
 
 // Close closes the underlying database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Dir is the directory holding the state database. Machine-local caches
+// (the D check's bare git clones) live under it.
+func (s *Store) Dir() string { return s.dir }
 
 // DB exposes the underlying handle (used by tests).
 func (s *Store) DB() *sql.DB { return s.db }
