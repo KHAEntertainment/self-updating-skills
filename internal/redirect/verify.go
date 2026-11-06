@@ -133,9 +133,12 @@ const (
 type walkResult struct {
 	state keyState
 	// leafPlain: for keyDeclared, the final property resolves to a plain
-	// type schema; deprecated: that resolution is marked deprecated.
-	leafPlain  bool
-	deprecated bool
+	// type schema. retired: that resolution carries "deprecated": true
+	// (proves an old key retired). marked: the keyword, or a description
+	// beginning "Deprecated" (blocks a new key).
+	leafPlain bool
+	retired   bool
+	marked    bool
 }
 
 func (cs *ConfigSchema) walk(path []string) walkResult {
@@ -152,8 +155,8 @@ func (cs *ConfigSchema) walk(path []string) walkResult {
 			return walkResult{state: keyOpen}
 		}
 		if i == len(path)-1 {
-			ok, dep := plainLeaf(p, 0, map[*jsonschema.Schema]bool{})
-			return walkResult{state: keyDeclared, leafPlain: ok, deprecated: dep}
+			ok, retired, marked := plainLeaf(p, 0, map[*jsonschema.Schema]bool{})
+			return walkResult{state: keyDeclared, leafPlain: ok, retired: retired, marked: marked}
 		}
 		cur = p
 	}
@@ -164,7 +167,7 @@ func (cs *ConfigSchema) walk(path []string) walkResult {
 // no boolean schema, no $ref/allOf, no applicator or conditional keyword,
 // no patternProperties, not deprecated.
 func plainObject(s *jsonschema.Schema) bool {
-	if s == nil || s.Bool != nil || s.Ref != nil || len(s.AllOf) > 0 || deprecatedSelf(s) {
+	if s == nil || s.Bool != nil || s.Ref != nil || len(s.AllOf) > 0 || markedDeprecated(s) {
 		return false
 	}
 	return !hasForbidden(s)
@@ -182,11 +185,11 @@ func hasForbidden(s *jsonschema.Schema) bool {
 // plainLeaf resolves a leaf property. It is plain when it uses only type,
 // format, description, title, enum, const, default, examples, minLength,
 // maxLength and pattern, plus local $ref / allOf members that are plain in
-// turn, within maxRefDepth and without a cycle. deprecated reports a
-// deprecation mark anywhere in the resolved set.
-func plainLeaf(s *jsonschema.Schema, depth int, seen map[*jsonschema.Schema]bool) (ok, deprecated bool) {
+// turn, within maxRefDepth and without a cycle. retired and marked report
+// retiredKeyword and markedDeprecated anywhere in the resolved set.
+func plainLeaf(s *jsonschema.Schema, depth int, seen map[*jsonschema.Schema]bool) (ok, retired, marked bool) {
 	if s == nil || s.Bool != nil || depth > maxRefDepth || seen[s] {
-		return false, false
+		return false, false, false
 	}
 	seen[s] = true
 	defer delete(seen, s)
@@ -196,34 +199,42 @@ func plainLeaf(s *jsonschema.Schema, depth int, seen map[*jsonschema.Schema]bool
 		s.UnevaluatedItems != nil || s.Contains != nil || s.MinItems != nil || s.MaxItems != nil || s.UniqueItems ||
 		s.Maximum != nil || s.Minimum != nil || s.ExclusiveMaximum != nil || s.ExclusiveMinimum != nil || s.MultipleOf != nil ||
 		s.ContentEncoding != nil || s.ContentMediaType != nil || s.ContentSchema != nil {
-		return false, false
+		return false, false, false
 	}
-	deprecated = deprecatedSelf(s)
+	retired, marked = retiredKeyword(s), markedDeprecated(s)
 	members := append([]*jsonschema.Schema(nil), s.AllOf...)
 	if s.Ref != nil {
 		members = append(members, s.Ref)
 	}
 	for _, m := range members {
-		mok, mdep := plainLeaf(m, depth+1, seen)
+		mok, mret, mmark := plainLeaf(m, depth+1, seen)
 		if !mok {
-			return false, false
+			return false, false, false
 		}
-		deprecated = deprecated || mdep
+		retired, marked = retired || mret, marked || mmark
 	}
-	return true, deprecated
+	return true, retired, marked
 }
 
-// deprecatedSelf is the JSON Schema "deprecated": true keyword only.
-// Description text is never read as a deprecation mark (PR #18 round 4):
-// "Deprecated? No, …" would otherwise prove retirement.
-func deprecatedSelf(s *jsonschema.Schema) bool { return s.Deprecated }
+// retiredKeyword is the JSON Schema "deprecated": true keyword only. It is
+// the one proof that an old key is retired: description text never proves
+// retirement (PR #18 round 4), or "Deprecated? No, …" would.
+func retiredKeyword(s *jsonschema.Schema) bool { return s.Deprecated }
+
+// markedDeprecated is the conservative, blocking test: the keyword, or a
+// description beginning "deprecated" (case-insensitive, trimmed). A new
+// key or an intermediate object so marked never lets S pass.
+func markedDeprecated(s *jsonschema.Schema) bool {
+	return s.Deprecated || strings.HasPrefix(strings.ToLower(strings.TrimSpace(s.Description)), "deprecated")
+}
 
 const tooComplex = "schema too complex to verify"
 
 // CheckS is the schema check. config-key rows: new is a bare key path that
-// the allowlisted walk resolves to a declared, plain, non-deprecated leaf,
-// and old is a bare key path a plain closed object refuses, or a declared
-// plain leaf marked deprecated. flag rows: deferred (no binary is
+// the allowlisted walk resolves to a declared, plain leaf not marked
+// deprecated (keyword or "Deprecated…" description), and old is a bare key
+// path a plain closed object refuses, or a declared plain leaf carrying the
+// "deprecated": true keyword. flag rows: deferred (no binary is
 // executed). Other kinds: not applicable.
 func CheckS(r Row, cs *ConfigSchema, schemaErr string) Check {
 	switch r.Kind {
@@ -260,7 +271,7 @@ func CheckS(r Row, cs *ConfigSchema, schemaErr string) Check {
 	case nw.state != keyDeclared:
 		c.Detail = fmt.Sprintf("new key is not declared in schema %s", cs.SHA)
 		return c
-	case nw.deprecated:
+	case nw.marked:
 		return notRun("S", "new key is marked deprecated")
 	}
 	ow := cs.walk(oldPath)
@@ -269,7 +280,7 @@ func CheckS(r Row, cs *ConfigSchema, schemaErr string) Check {
 		return notRun("S", tooComplex+" (old key)")
 	case ow.state == keyRejected:
 		c.Detail = fmt.Sprintf("new key declared, old key refused by schema %s", cs.SHA)
-	case ow.state == keyDeclared && ow.deprecated:
+	case ow.state == keyDeclared && ow.retired:
 		c.Detail = fmt.Sprintf("new key declared, old key deprecated in schema %s", cs.SHA)
 	default:
 		c.Detail = fmt.Sprintf("old key is still accepted by schema %s", cs.SHA)
@@ -293,10 +304,11 @@ type History struct {
 
 // CheckD is the doc-history check: old was present before (in the
 // previous snapshot or in upstream git history), old is absent from the
-// newest snapshot of the page, and new is present now. Every presence test
-// is a whole-identifier match after Canon (NFC, Markdown unescape,
-// whitespace collapse), so api.v1 is not evidenced by api.v10 and a
-// line-wrapped or escaped mention still counts as present. Deprecation
+// newest snapshot of the page, and new is present now. Presence as
+// evidence (old before, new now) is a whole-identifier match after Canon
+// (NFC, Markdown unescape, whitespace collapse), so api.v1 is not evidenced
+// by api.v10. Absence of old now is conservative: any Canon substring
+// occurrence (api.v1.0, --legacy-mode) keeps old present. Deprecation
 // wording is never evidence (owner decision, PR #18 round 3): a page that
 // still mentions old, in any terms, keeps D unpassed.
 func CheckD(r Row, now string, h History) Check {
@@ -313,7 +325,9 @@ func CheckD(r Row, now string, h History) Check {
 		c.Detail = "old not found in the previous snapshot or git history"
 		return c
 	}
-	if ContainsIdentifier(now, r.Old) {
+	// Absence is the conservative test: any substring occurrence of old in
+	// Canon form keeps it present ("--legacy-mode" still shows --legacy).
+	if strings.Contains(Canon(now), Canon(r.Old)) {
 		c.Detail = "old still present in the newest snapshot"
 		return c
 	}

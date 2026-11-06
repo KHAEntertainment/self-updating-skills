@@ -1151,3 +1151,63 @@ func TestDraftInputBudgetGoesToPR(t *testing.T) {
 	}
 	assertUnchanged(t, f, sk0, sc0)
 }
+
+// --- Lead's read of ff55473 (each fails on ff55473) ---
+
+// L1: old counts as absent now only when no Canon substring of it remains.
+// The page still shows --legacy-mode, so D must not pass.
+func TestDraftOldAbsenceConservativeRegression(t *testing.T) {
+	f := newCodexFixture(t, fixtureOpts{storePrev: true,
+		prevText: "Run with --legacy to enable it.\n",
+		newText:  "Run with --modern to enable it. --legacy-mode is separate.\n"})
+	row := map[string]string{
+		"id": "legacy", "old": "--legacy", "new": "--modern", "kind": "path", "since": "0.151.0",
+		"source": f.source(), "quote": "Run with --modern to enable it.", "page": refPage,
+	}
+	useDrafter(t, &stubDrafter{reply: rowsJSON(row)})
+	sk0, sc0 := f.files(t)
+	sr, _, err := runDraft(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sr.Status != "pr" || checkState(sr.Rows[0], "D") != "fail" {
+		t.Fatalf("got %s %+v", sr.Status, sr.Rows)
+	}
+	assertUnchanged(t, f, sk0, sc0)
+}
+
+// L2: a "Deprecated…" description still blocks the new side: a new key so
+// described (real Codex personality), or a new key under an intermediate
+// object so described, never gives S a pass.
+func TestDraftDeprecatedDescriptionBlocksRegression(t *testing.T) {
+	t.Run("new key described deprecated (Codex personality)", func(t *testing.T) {
+		const q = "Set `personality` to pick a style."
+		f := newCodexFixture(t, fixtureOpts{storePrev: true, newText: refNew + q + "\n"})
+		useDrafter(t, &stubDrafter{reply: rowsJSON(keyRow(f, "codex-personality", "experimental_instructions_file", "personality", q))})
+		sk0, sc0 := f.files(t)
+		sr, _, err := runDraft(t, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sr.Status != "pr" || checkState(sr.Rows[0], "S") == "pass" {
+			t.Fatalf("got %s %+v", sr.Status, sr.Rows)
+		}
+		assertUnchanged(t, f, sk0, sc0)
+	})
+	t.Run("intermediate object described deprecated", func(t *testing.T) {
+		const q = "Set `section.new_key` in config.toml."
+		schema := `{"type":"object","properties":{"section":{"type":"object","description":"Deprecated: use other.","properties":{"new_key":{"type":"string"}},"additionalProperties":false}},"additionalProperties":false}`
+		next := "# Config reference\n\n" + q + "\nold_key also still works.\n"
+		f := newCodexFixture(t, fixtureOpts{storePrev: true, prevText: "Set `old_key` in config.toml.\n", newText: next, schema: schema})
+		useDrafter(t, &stubDrafter{reply: rowsJSON(keyRow(f, "section-key", "old_key", "section.new_key", q))})
+		sk0, sc0 := f.files(t)
+		sr, _, err := runDraft(t, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sr.Status != "pr" || checkState(sr.Rows[0], "S") == "pass" {
+			t.Fatalf("got %s %+v", sr.Status, sr.Rows)
+		}
+		assertUnchanged(t, f, sk0, sc0)
+	})
+}

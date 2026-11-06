@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -141,17 +142,17 @@ func TestCheckSConfigKey(t *testing.T) {
 	if c := CheckS(r, cs, ""); c.Pass {
 		t.Fatal("old still current passed S")
 	}
-	// Round 4 (intended flip): only the "deprecated": true keyword marks a
-	// key retired. personality's description says "Deprecated: …" but it
-	// carries no keyword, so it is a current key: as old it does not pass,
-	// and as new it is accepted.
+	// Round 4: only the "deprecated": true keyword proves an old key
+	// retired, so personality (description "Deprecated: …", no keyword) as
+	// old does not pass (intended flip). As new, the description still
+	// blocks: a "Deprecated…" description marks it deprecated.
 	r.Old, r.New = "personality", "model_verbosity"
 	if c := CheckS(r, cs, ""); c.Pass {
 		t.Fatalf("description-only deprecation passed S: %+v", c)
 	}
 	r.Old, r.New = "experimental_instructions_file", "personality"
-	if c := CheckS(r, cs, ""); !c.Pass {
-		t.Fatalf("description-only deprecated new must count as current: %+v", c)
+	if c := CheckS(r, cs, ""); c.Pass {
+		t.Fatalf("description-deprecated new passed S: %+v", c)
 	}
 	// Nested dotted path under features (additionalProperties false).
 	r.Old, r.New = "features.no_such_flag_xyz", "features.agent_message_board"
@@ -524,5 +525,56 @@ func TestCheckSDeprecatedKeywordOnly(t *testing.T) {
 	r.New = "dep_new"
 	if c := CheckS(r, compile(`{"type":"string","deprecated":true}`), ""); c.Pass {
 		t.Fatalf("deprecated new passed S: %+v", c)
+	}
+}
+
+// The blocking side stays conservative (round 4, L2): a new key, or an
+// intermediate object, whose description begins "Deprecated" never passes.
+func TestCheckSDeprecatedDescriptionBlocks(t *testing.T) {
+	compile := func(src string) *ConfigSchema {
+		t.Helper()
+		cs, err := CompileConfigSchema([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cs
+	}
+	r := validRow()
+	r.Old, r.New = "old_key", "new_key"
+	for _, desc := range []string{"Deprecated: use other_key.", "  deprecated since 2.0", "DEPRECATED"} {
+		cs := compile(`{"type":"object","properties":{"new_key":{"type":"string","description":` + strconv.Quote(desc) + `}},"additionalProperties":false}`)
+		if c := CheckS(r, cs, ""); c.Pass {
+			t.Fatalf("new with description %q passed S: %+v", desc, c)
+		}
+	}
+	cs := compile(`{"type":"object","properties":{"section":{"type":"object","description":"Deprecated: use other.","properties":{"new_key":{"type":"string"}},"additionalProperties":false}},"additionalProperties":false}`)
+	r.New = "section.new_key"
+	if c := CheckS(r, cs, ""); c.Pass {
+		t.Fatalf("new under a deprecated intermediate passed S: %+v", c)
+	}
+	// A description that only mentions deprecation later does not block.
+	cs = compile(`{"type":"object","properties":{"new_key":{"type":"string","description":"Replaces the deprecated old_key."}},"additionalProperties":false}`)
+	r.New = "new_key"
+	if c := CheckS(r, cs, ""); !c.Pass {
+		t.Fatalf("non-leading deprecation wording blocked S: %+v", c)
+	}
+}
+
+// Absence of old now is a plain Canon substring test (round 4, L1): a
+// longer identifier containing old keeps old present.
+func TestCheckDAbsenceConservative(t *testing.T) {
+	r := validRow()
+	r.Old, r.New, r.Kind = "--legacy", "--modern", KindPath
+	h := History{Previous: "Run with --legacy.", HasPrevious: true}
+	if c := CheckD(r, "Run with --modern. --legacy-mode is separate.", h); c.Pass {
+		t.Fatalf("old inside --legacy-mode counted absent: %+v", c)
+	}
+	r.Old, r.New = "api.v1", "api.v2"
+	h.Previous = "Use api.v1."
+	if c := CheckD(r, "Use api.v2. api.v1.0 is archived.", h); c.Pass {
+		t.Fatalf("old inside api.v1.0 counted absent: %+v", c)
+	}
+	if c := CheckD(r, "Use api.v2.", h); !c.Pass {
+		t.Fatalf("clean rename must pass D: %+v", c)
 	}
 }
