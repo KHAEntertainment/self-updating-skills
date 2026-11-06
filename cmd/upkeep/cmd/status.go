@@ -45,10 +45,10 @@ var statusCmd = &cobra.Command{
 			fmt.Fprintln(out, "no runs recorded")
 		}
 		for _, r := range res.Runs {
-			fmt.Fprintf(out, "run %d %s %s → %s (%s)\n", r.ID, r.Runner, r.StartedAt, r.FinishedAt, r.Outcome)
+			fmt.Fprintf(out, "run %d %s %s → %s (%s)\n", r.ID, safeLine(r.Runner), r.StartedAt, r.FinishedAt, safeLine(r.Outcome))
 		}
 		for _, f := range pend.Failures {
-			fmt.Fprintf(out, "FAILED %s — %s\n", f.SkillDir, safeLine(f.Error))
+			fmt.Fprintf(out, "FAILED %s — %s\n", safeLine(f.SkillDir), safeLine(f.Error))
 		}
 		for _, v := range pend.Rows {
 			var row struct {
@@ -61,10 +61,10 @@ var statusCmd = &cobra.Command{
 			row.Reason = safeLine(row.Reason)
 			label := map[string]string{"pr": "PR", "fallback": "FALLBACK", "hard_stop": "HARD-STOP"}[v.Outcome]
 			if row.ID == "" {
-				fmt.Fprintf(out, "%s %s (run %d) — %s\n", label, v.Skill, v.RunID, row.Reason)
+				fmt.Fprintf(out, "%s %s (run %d) — %s\n", label, safeLine(v.Skill), v.RunID, row.Reason)
 				continue
 			}
-			fmt.Fprintf(out, "%s %s (run %d) row %q: %q → %q — %s\n", label, v.Skill, v.RunID, row.ID, row.Old, row.New, row.Reason)
+			fmt.Fprintf(out, "%s %s (run %d) row %q: %q → %q — %s\n", label, safeLine(v.Skill), v.RunID, row.ID, row.Old, row.New, row.Reason)
 		}
 		return nil
 	},

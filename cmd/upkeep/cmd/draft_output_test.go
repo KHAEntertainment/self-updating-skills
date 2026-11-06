@@ -90,7 +90,15 @@ func TestStatusEscapesPendingRows(t *testing.T) {
 	if err := st.SaveRowVerdict(ctx, runID, "skill-b", string(skillRow), "[]", "pr", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	rep, _ := json.Marshal(map[string]any{"results": []engine.SkillResult{{SkillDir: "/s/c", Status: "failed", Error: "drafting unavailable: " + hostile}}})
+	// A skill name or directory is printed too: a hostile one must not
+	// forge a line either.
+	if err := st.SaveRowVerdict(ctx, runID, "skill-e"+hostile, string(skillRow), "[]", "pr", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	rep, _ := json.Marshal(map[string]any{"results": []engine.SkillResult{
+		{SkillDir: "/s/c", Status: "failed", Error: "drafting unavailable: " + hostile},
+		{SkillDir: "/s/f" + hostile, Status: "failed", Error: "x"},
+	}})
 	if err := st.FinishRun(ctx, runID, "failed", string(rep)); err != nil {
 		t.Fatal(err)
 	}
@@ -105,9 +113,9 @@ func TestStatusEscapesPendingRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	// run line, FAILED line, FALLBACK row line, PR skill-level line.
-	assertSafe(t, out, 4)
-	for _, want := range []string{"FAILED /s/c", `FALLBACK skill-a (run 1) row "r1"`, `PR skill-b (run 1) — "pr: page hooks changed with no accepted row`} {
+	// run line, 2 FAILED lines, FALLBACK row line, 2 PR skill-level lines.
+	assertSafe(t, out, 6)
+	for _, want := range []string{"FAILED /s/c", `FAILED "/s/fevil\x1b[2J FORGED LINE x"`, `FALLBACK skill-a (run 1) row "r1"`, `PR skill-b (run 1) — "pr: page hooks changed with no accepted row`, `PR "skill-eevil\x1b[2J FORGED LINE x" (run 1)`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in %q", want, out)
 		}
