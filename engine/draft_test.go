@@ -996,3 +996,158 @@ func TestDraftDeprecationWordingRegression(t *testing.T) {
 		})
 	}
 }
+
+// --- PR #18 round-4 regressions (each fails on dd8cc3e) ---
+
+// F1 (round 4): two rows rewriting the same old would leave the redirect
+// table ambiguous, even when each passes on its own. A human picks (PR).
+func TestDraftDuplicateOldGoesToPR(t *testing.T) {
+	const q2 = "Set `compact_prompt` for history compaction."
+	f := newCodexFixture(t, fixtureOpts{storePrev: true, newText: refNew + q2 + "\n"})
+	useDrafter(t, &stubDrafter{reply: rowsJSON(renameRow(f),
+		keyRow(f, "codex-compact-prompt", "experimental_instructions_file", "compact_prompt", q2))})
+	sk0, sc0 := f.files(t)
+	sr, _, err := runDraft(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sr.Status != "pr" || !strings.Contains(sr.Reason, "duplicate old: experimental_instructions_file") {
+		t.Fatalf("got %s %q %+v", sr.Status, sr.Reason, sr.Rows)
+	}
+	for _, rr := range sr.Rows {
+		if rr.Outcome != redirect.OutcomePR {
+			t.Fatalf("row %s: %s %q", rr.Row.ID, rr.Outcome, rr.Reason)
+		}
+	}
+	assertUnchanged(t, f, sk0, sc0)
+}
+
+// F2 (round 4): D compares whole identifiers (NFC, Markdown escapes
+// removed), not substrings. Each case passed D on dd8cc3e.
+func TestDraftIdentifierEvidenceRegression(t *testing.T) {
+	cases := []struct {
+		name, prev, next, old, new, quote string
+	}{
+		// old only as a prefix of a longer identifier in the previous page.
+		{"old prefix in previous", "Use api.v10.\n", "Use api.v2.\n", "api.v1", "api.v2", "Use api.v2."},
+		// new only as a prefix of a longer identifier on the page.
+		{"new prefix on page", "Use api.v1.\n", "Use api.v20.\n", "api.v1", "api.v2", "Use api.v20."},
+		// old still on the page, Markdown-escaped.
+		{"escaped old still present", "Use old_key.\n", "Use old\\_key. Use new_key.\n", "old_key", "new_key", "Use new_key."},
+		// old still on the page, in NFD while the row is NFC.
+		{"NFD old still present", "Order a café.\n", "Order a tea. A café is still listed.\n", "café", "tea", "Order a tea."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCodexFixture(t, fixtureOpts{storePrev: true, prevText: tc.prev, newText: tc.next})
+			row := map[string]string{
+				"id": "ident", "old": tc.old, "new": tc.new, "kind": "path", "since": "0.151.0",
+				"source": f.source(), "quote": tc.quote, "page": refPage,
+			}
+			useDrafter(t, &stubDrafter{reply: rowsJSON(row)})
+			sk0, sc0 := f.files(t)
+			sr, _, err := runDraft(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sr.Status != "pr" || checkState(sr.Rows[0], "D") != "fail" {
+				t.Fatalf("got %s %+v", sr.Status, sr.Rows)
+			}
+			assertUnchanged(t, f, sk0, sc0)
+		})
+	}
+}
+
+// F2 (round 4), git: `git log -S --legacy` hits a history that only ever
+// held --legacy-mode. The patch lines are matched as whole identifiers, so
+// D finds no evidence and the row goes to a PR.
+func TestDraftGitHistoryIdentifierRegression(t *testing.T) {
+	source.AllowLocalGitRepo = "engine-test"
+	t.Cleanup(func() { source.AllowLocalGitRepo = "" })
+	const docsPath = "docs"
+	repo := filepath.Join(t.TempDir(), "docs-repo")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(repo, docsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "-q", "-b", "main")
+	page := filepath.Join(repo, docsPath, "cli.md")
+	os.WriteFile(page, []byte("Run with --legacy-mode.\n"), 0o644)
+	git("add", ".")
+	git("commit", "-qm", "legacy mode")
+	newText := "Run with --modern.\n"
+	os.WriteFile(page, []byte(newText), 0o644)
+	git("commit", "-qam", "modern")
+
+	f := newCodexFixture(t, fixtureOpts{
+		page: "cli", newText: newText,
+		verifiedSHA: "sha256:not-in-this-database", storePrev: false,
+		extraMeta: fmt.Sprintf("  upkeep-docs-repo: %q\n  upkeep-docs-path: %q\n", repo, docsPath),
+	})
+	row := map[string]string{
+		"id": "legacy", "old": "--legacy", "new": "--modern", "kind": "path", "since": "0.151.0",
+		"source": f.base + "/cli.md", "quote": "Run with --modern.", "page": "cli",
+	}
+	useDrafter(t, &stubDrafter{reply: rowsJSON(row)})
+	sk0, sc0 := f.files(t)
+	sr, _, err := runDraft(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sr.Status != "pr" || checkState(sr.Rows[0], "D") != "fail" {
+		t.Fatalf("got %s %+v", sr.Status, sr.Rows)
+	}
+	assertUnchanged(t, f, sk0, sc0)
+}
+
+// F3 (round 4): only the "deprecated": true keyword retires a key. A
+// description that says "Deprecated? No…" on a deprecated:false key must
+// not give S a pass.
+func TestDraftDeprecatedKeywordOnlyRegression(t *testing.T) {
+	const q = "Set `new_key` in config.toml."
+	schema := `{"type":"object","properties":{"old_key":{"type":"string","deprecated":false,"description":"Deprecated? No, this setting is still supported."},"new_key":{"type":"string"}},"additionalProperties":false}`
+	next := "# Config reference\n\n" + q + "\nold_key also still works.\n"
+	f := newCodexFixture(t, fixtureOpts{storePrev: true, prevText: "Set `old_key` in config.toml.\n", newText: next, schema: schema})
+	useDrafter(t, &stubDrafter{reply: rowsJSON(keyRow(f, "new-key", "old_key", "new_key", q))})
+	sk0, sc0 := f.files(t)
+	sr, _, err := runDraft(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sr.Status != "pr" || checkState(sr.Rows[0], "S") == "pass" {
+		t.Fatalf("got %s %+v", sr.Status, sr.Rows)
+	}
+	assertUnchanged(t, f, sk0, sc0)
+}
+
+// Input budget (round 4): page text over redirect.MaxDraftInputBytes goes
+// to a PR with no model call; the drafter (and its API key) is never
+// needed.
+func TestDraftInputBudgetGoesToPR(t *testing.T) {
+	big := refNew + strings.Repeat("Filler line for the budget test.\n", 13000)
+	f := newCodexFixture(t, fixtureOpts{storePrev: true, newText: big})
+	called := false
+	restore := engine.SetDrafter(func() (redirect.Drafter, error) {
+		called = true
+		return nil, errors.New("no API key")
+	})
+	t.Cleanup(restore)
+	sk0, sc0 := f.files(t)
+	sr, _, err := runDraft(t, f)
+	if err != nil {
+		t.Fatalf("%v %+v", err, sr)
+	}
+	if called {
+		t.Fatal("drafter requested for an over-budget input")
+	}
+	if sr.Status != "pr" || !strings.Contains(sr.Reason, "exceeds 400000 bytes") {
+		t.Fatalf("got %s %q", sr.Status, sr.Reason)
+	}
+	assertUnchanged(t, f, sk0, sc0)
+}
