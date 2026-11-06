@@ -91,6 +91,8 @@ type fixtureOpts struct {
 	prevText    string // previous snapshot text (default refOld)
 	// second, when set, is another tracked page that also changed.
 	second *fixturePage
+	// schema replaces the vendored Codex schema served to S.
+	schema string
 }
 
 type fixturePage struct{ name, prev, next string }
@@ -105,6 +107,9 @@ func newCodexFixture(t *testing.T, o fixtureOpts) draftFixture {
 	schema, err := os.ReadFile(filepath.Join(moduleRoot(), "testdata", "redirect", "codex-config-schema.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if o.schema != "" {
+		schema = []byte(o.schema)
 	}
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/codex/config-schema.json" {
@@ -827,23 +832,29 @@ func TestDraftSchemaMapEntryRegression(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if sr.Status != "pr" || checkState(sr.Rows[0], "S") != "fail" {
+		// Round 3 allowlist: agents is allOf/$ref, so S does not run; the
+		// row is still not auto-accepted.
+		if sr.Status != "pr" || checkState(sr.Rows[0], "S") != "not run" {
 			t.Fatalf("got %s %+v", sr.Status, sr.Rows)
 		}
 		assertUnchanged(t, f, sk0, sc0)
 	})
-	t.Run("map entry as new is accepted", func(t *testing.T) {
+	// Round 3 allowlist: agents is allOf/$ref to an object, which S does
+	// not read, so the map entry as new is not verified either (PR).
+	t.Run("map entry as new is not verifiable", func(t *testing.T) {
 		const q = "Set `agents.reviewer.config_file` to a role file."
 		next := "# Config reference\n\n" + q + "\nThe key experimental_instructions_file was renamed in 0.151.0.\n"
 		f := newCodexFixture(t, fixtureOpts{storePrev: true, newText: next})
 		useDrafter(t, &stubDrafter{reply: rowsJSON(keyRow(f, "role-config", "experimental_instructions_file", "agents.reviewer.config_file", q))})
+		sk0, sc0 := f.files(t)
 		sr, _, err := runDraft(t, f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if sr.Status != "written" || checkState(sr.Rows[0], "S") != "pass" {
+		if sr.Status != "pr" || checkState(sr.Rows[0], "S") != "not run" {
 			t.Fatalf("got %s %+v", sr.Status, sr.Rows)
 		}
+		assertUnchanged(t, f, sk0, sc0)
 	})
 }
 
@@ -924,5 +935,64 @@ func TestDraftUncoveredChangedPageGoesToPR(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("status must list the uncovered page: %+v", p.Rows)
+	}
+}
+
+// --- PR #18 round-2 review regressions (each fails on 71f0827) ---
+
+// R2 (round 2): schemas that forbid the new key through $ref, allOf or a
+// patternProperties false must never give S a pass — the allowlist makes
+// S "not run" and the row goes to a PR.
+func TestDraftSchemaAllowlistRegression(t *testing.T) {
+	const q = "Set `new_key` in config.toml."
+	next := "# Config reference\n\n" + q + "\nThe key old_key was renamed in 0.151.0.\n"
+	for name, schema := range map[string]string{
+		"ref to false":            `{"type":"object","properties":{"new_key":{"$ref":"#/$defs/dead"}},"$defs":{"dead":false},"additionalProperties":false}`,
+		"allOf false":             `{"type":"object","properties":{"new_key":{"allOf":[false]}},"additionalProperties":false}`,
+		"patternProperties false": `{"type":"object","properties":{"new_key":{"type":"string"}},"patternProperties":{"^new_":false},"additionalProperties":false}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newCodexFixture(t, fixtureOpts{storePrev: true, prevText: "Set `old_key` in config.toml.\n", newText: next, schema: schema})
+			useDrafter(t, &stubDrafter{reply: rowsJSON(keyRow(f, "new-key", "old_key", "new_key", q))})
+			sk0, sc0 := f.files(t)
+			sr, _, err := runDraft(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sr.Status != "pr" || checkState(sr.Rows[0], "S") == "pass" {
+				t.Fatalf("got %s %+v", sr.Status, sr.Rows)
+			}
+			assertUnchanged(t, f, sk0, sc0)
+		})
+	}
+}
+
+// R3 (round 2): deprecation wording is no longer evidence. A page that
+// still mentions old — even saying it was deprecated — never passes D.
+func TestDraftDeprecationWordingRegression(t *testing.T) {
+	for _, tail := range []string{
+		"--legacy was deprecated but is now supported again.",
+		"It is false that --legacy is deprecated.",
+		"--legacy is deprecated? No, it is still supported.",
+	} {
+		t.Run(tail, func(t *testing.T) {
+			f := newCodexFixture(t, fixtureOpts{storePrev: true,
+				prevText: "Run with --legacy to enable it.\n",
+				newText:  "Run with --modern to enable it. " + tail + "\n"})
+			row := map[string]string{
+				"id": "legacy", "old": "--legacy", "new": "--modern", "kind": "path", "since": "0.151.0",
+				"source": f.source(), "quote": "Run with --modern to enable it.", "page": refPage,
+			}
+			useDrafter(t, &stubDrafter{reply: rowsJSON(row)})
+			sk0, sc0 := f.files(t)
+			sr, _, err := runDraft(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sr.Status != "pr" || checkState(sr.Rows[0], "D") != "fail" {
+				t.Fatalf("got %s %+v", sr.Status, sr.Rows)
+			}
+			assertUnchanged(t, f, sk0, sc0)
+		})
 	}
 }
