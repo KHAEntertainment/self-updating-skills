@@ -213,11 +213,10 @@ func plainLeaf(s *jsonschema.Schema, depth int, seen map[*jsonschema.Schema]bool
 	return true, deprecated
 }
 
-// deprecatedSelf: "deprecated": true, or a description starting with
-// "Deprecated" (how the Codex schema marks retired keys).
-func deprecatedSelf(s *jsonschema.Schema) bool {
-	return s.Deprecated || strings.HasPrefix(strings.ToLower(strings.TrimSpace(s.Description)), "deprecated")
-}
+// deprecatedSelf is the JSON Schema "deprecated": true keyword only.
+// Description text is never read as a deprecation mark (PR #18 round 4):
+// "Deprecated? No, …" would otherwise prove retirement.
+func deprecatedSelf(s *jsonschema.Schema) bool { return s.Deprecated }
 
 const tooComplex = "schema too complex to verify"
 
@@ -294,8 +293,10 @@ type History struct {
 
 // CheckD is the doc-history check: old was present before (in the
 // previous snapshot or in upstream git history), old is absent from the
-// newest snapshot of the page (whitespace-normalized, so a line-wrapped
-// mention still counts as present), and new is present now. Deprecation
+// newest snapshot of the page, and new is present now. Every presence test
+// is a whole-identifier match after Canon (NFC, Markdown unescape,
+// whitespace collapse), so api.v1 is not evidenced by api.v10 and a
+// line-wrapped or escaped mention still counts as present. Deprecation
 // wording is never evidence (owner decision, PR #18 round 3): a page that
 // still mentions old, in any terms, keeps D unpassed.
 func CheckD(r Row, now string, h History) Check {
@@ -307,18 +308,16 @@ func CheckD(r Row, now string, h History) Check {
 		return notRun("D", why)
 	}
 	c := Check{Name: "D", Ran: true}
-	oldN := Normalize(r.Old)
-	inPrev := h.HasPrevious && strings.Contains(Normalize(h.Previous), oldN)
-	if oldN == "" || !(inPrev || (h.GitRan && h.GitFound)) {
+	inPrev := h.HasPrevious && ContainsIdentifier(h.Previous, r.Old)
+	if Canon(r.Old) == "" || !(inPrev || (h.GitRan && h.GitFound)) {
 		c.Detail = "old not found in the previous snapshot or git history"
 		return c
 	}
-	nowN := Normalize(now)
-	if strings.Contains(nowN, oldN) {
+	if ContainsIdentifier(now, r.Old) {
 		c.Detail = "old still present in the newest snapshot"
 		return c
 	}
-	if n := Normalize(r.New); n == "" || !strings.Contains(nowN, n) {
+	if !ContainsIdentifier(now, r.New) {
 		c.Detail = "new not present in the newest snapshot"
 		return c
 	}

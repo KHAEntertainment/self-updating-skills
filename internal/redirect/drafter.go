@@ -61,6 +61,20 @@ type Input struct {
 	Existing []ExistingRow
 }
 
+// MaxDraftInputBytes bounds the page text one model call may carry. A
+// draft over it goes to a PR without a model call.
+const MaxDraftInputBytes = 400_000
+
+// InputSize is the page text the drafter would send: every page's new
+// text plus its diff.
+func InputSize(in Input) int {
+	n := 0
+	for _, p := range in.Pages {
+		n += len(p.New) + len(p.Diff)
+	}
+	return n
+}
+
 // Drafter turns an Input into raw JSON model output. Callers must pass the
 // result through ParseDraft; nothing else about the output is trusted.
 type Drafter interface {

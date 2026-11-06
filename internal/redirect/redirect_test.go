@@ -141,15 +141,17 @@ func TestCheckSConfigKey(t *testing.T) {
 	if c := CheckS(r, cs, ""); c.Pass {
 		t.Fatal("old still current passed S")
 	}
-	// Deprecated old key (description "Deprecated: …") is retired.
+	// Round 4 (intended flip): only the "deprecated": true keyword marks a
+	// key retired. personality's description says "Deprecated: …" but it
+	// carries no keyword, so it is a current key: as old it does not pass,
+	// and as new it is accepted.
 	r.Old, r.New = "personality", "model_verbosity"
-	if c := CheckS(r, cs, ""); !c.Pass {
-		t.Fatalf("deprecated old must pass S: %+v", c)
-	}
-	// Deprecated new key fails.
-	r.Old, r.New = "experimental_instructions_file", "personality"
 	if c := CheckS(r, cs, ""); c.Pass {
-		t.Fatal("deprecated new passed S")
+		t.Fatalf("description-only deprecation passed S: %+v", c)
+	}
+	r.Old, r.New = "experimental_instructions_file", "personality"
+	if c := CheckS(r, cs, ""); !c.Pass {
+		t.Fatalf("description-only deprecated new must count as current: %+v", c)
 	}
 	// Nested dotted path under features (additionalProperties false).
 	r.Old, r.New = "features.no_such_flag_xyz", "features.agent_message_board"
@@ -494,5 +496,33 @@ func TestAllowedHosts(t *testing.T) {
 	cfg = skill.Config{Sources: skill.Sources{BaseURL: "http://plain.example/docs"}}
 	if got := AllowedHosts(cfg); len(got) != 0 {
 		t.Fatalf("non-https base must not be allowed: %v", got)
+	}
+}
+
+// Deprecation is the "deprecated" keyword alone; description wording never
+// decides it (round 4, F3).
+func TestCheckSDeprecatedKeywordOnly(t *testing.T) {
+	compile := func(oldProp string) *ConfigSchema {
+		t.Helper()
+		cs, err := CompileConfigSchema([]byte(`{"type":"object","properties":{"old_key":` + oldProp + `,"new_key":{"type":"string"},"dep_new":{"type":"string","deprecated":true}},"additionalProperties":false}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cs
+	}
+	r := validRow()
+	r.Old, r.New = "old_key", "new_key"
+	if c := CheckS(r, compile(`{"type":"string","deprecated":false,"description":"Deprecated? No, this setting is still supported."}`), ""); c.Pass {
+		t.Fatalf("deprecated:false with deprecation wording passed S: %+v", c)
+	}
+	if c := CheckS(r, compile(`{"type":"string","description":"Deprecated: use new_key."}`), ""); c.Pass {
+		t.Fatalf("description-only deprecation passed S: %+v", c)
+	}
+	if c := CheckS(r, compile(`{"type":"string","deprecated":true}`), ""); !c.Pass {
+		t.Fatalf("deprecated:true old must pass S: %+v", c)
+	}
+	r.New = "dep_new"
+	if c := CheckS(r, compile(`{"type":"string","deprecated":true}`), ""); c.Pass {
+		t.Fatalf("deprecated new passed S: %+v", c)
 	}
 }
