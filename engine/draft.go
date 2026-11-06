@@ -291,11 +291,13 @@ func verifyRows(ctx context.Context, st *store.Store, cfg skill.Config, drafted 
 			if r.Kind == redirect.KindConfigKey {
 				loadSchema()
 			}
-			rr.Checks = append(rr.Checks, redirect.CheckS(r, cs, schemaErr))
+			// One history lookup feeds both S (old-existence evidence for a
+			// refused old key) and D.
 			h, err := history(ctx, st, cfg, byName[r.Page], r, hosts)
 			if err != nil {
 				return nil, err
 			}
+			rr.Checks = append(rr.Checks, redirect.CheckS(r, cs, schemaErr, h))
 			rr.Checks = append(rr.Checks, redirect.CheckD(r, byName[r.Page].text, h))
 		}
 		out = append(out, redirect.RouteRow(rr, rejected, existing, frozen))

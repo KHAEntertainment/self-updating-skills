@@ -234,9 +234,12 @@ const tooComplex = "schema too complex to verify"
 // the allowlisted walk resolves to a declared, plain leaf not marked
 // deprecated (keyword or "Deprecated…" description), and old is a bare key
 // path a plain closed object refuses, or a declared plain leaf carrying the
-// "deprecated": true keyword. flag rows: deferred (no binary is
-// executed). Other kinds: not applicable.
-func CheckS(r Row, cs *ConfigSchema, schemaErr string) Check {
+// "deprecated": true keyword. A closed object refuses any unknown name, so
+// a refused old passes only with independent evidence that it existed: in
+// the previous snapshot of the page or in the docs git history (h, the
+// same evidence D's first condition reads). flag rows: deferred (no binary
+// is executed). Other kinds: not applicable.
+func CheckS(r Row, cs *ConfigSchema, schemaErr string, h History) Check {
 	switch r.Kind {
 	case KindFlag:
 		return notRun("S", "flag check deferred")
@@ -279,7 +282,11 @@ func CheckS(r Row, cs *ConfigSchema, schemaErr string) Check {
 	case ow.state == keyComplex, ow.state == keyDeclared && !ow.leafPlain:
 		return notRun("S", tooComplex+" (old key)")
 	case ow.state == keyRejected:
-		c.Detail = fmt.Sprintf("new key declared, old key refused by schema %s", cs.SHA)
+		if !oldEvidenced(h, r.Old, strings.Join(oldPath, ".")) {
+			c.Detail = fmt.Sprintf("old key has no history evidence (refused by schema %s)", cs.SHA)
+			return c
+		}
+		c.Detail = fmt.Sprintf("new key declared, old key refused by schema %s and found in %s", cs.SHA, evidenceSource(h, r.Old, strings.Join(oldPath, ".")))
 	case ow.state == keyDeclared && ow.retired:
 		c.Detail = fmt.Sprintf("new key declared, old key deprecated in schema %s", cs.SHA)
 	default:
@@ -320,8 +327,8 @@ func CheckD(r Row, now string, h History) Check {
 		return notRun("D", why)
 	}
 	c := Check{Name: "D", Ran: true}
-	inPrev := h.HasPrevious && ContainsIdentifier(h.Previous, r.Old)
-	if Canon(r.Old) == "" || !(inPrev || (h.GitRan && h.GitFound)) {
+	inPrev := inPrevious(h, r.Old)
+	if Canon(r.Old) == "" || !oldEvidenced(h, r.Old) {
 		c.Detail = "old not found in the previous snapshot or git history"
 		return c
 	}
@@ -342,4 +349,31 @@ func CheckD(r Row, now string, h History) Check {
 	}
 	c.Detail = "old found in " + src + "; absent now; new present"
 	return c
+}
+
+// inPrevious reports whether any of the spellings is mentioned, as a whole
+// identifier, in the previous snapshot.
+func inPrevious(h History, spellings ...string) bool {
+	if !h.HasPrevious {
+		return false
+	}
+	for _, sp := range spellings {
+		if Canon(sp) != "" && ContainsIdentifier(h.Previous, sp) {
+			return true
+		}
+	}
+	return false
+}
+
+// oldEvidenced is the old-existence evidence S and D share: old in the
+// previous snapshot of the page, or in the docs git history.
+func oldEvidenced(h History, spellings ...string) bool {
+	return inPrevious(h, spellings...) || (h.GitRan && h.GitFound)
+}
+
+func evidenceSource(h History, spellings ...string) string {
+	if inPrevious(h, spellings...) {
+		return "the previous snapshot"
+	}
+	return "git history"
 }

@@ -1211,3 +1211,23 @@ func TestDraftDeprecatedDescriptionBlocksRegression(t *testing.T) {
 		assertUnchanged(t, f, sk0, sc0)
 	})
 }
+
+// CodeRabbit 4497176934 (confirmed by b73c5c73): a model-invented old key
+// that never existed upstream is refused by a closed schema like any
+// unknown name. Without history evidence for old, S must not pass, so the
+// row goes to a PR and nothing is written.
+func TestDraftInventedOldKeyGoesToPR(t *testing.T) {
+	const q = "Set new_key."
+	schema := `{"type":"object","properties":{"new_key":{"type":"string"}},"additionalProperties":false}`
+	f := newCodexFixture(t, fixtureOpts{storePrev: true, prevText: "Some unrelated documentation.\n", newText: q + "\n", schema: schema})
+	useDrafter(t, &stubDrafter{reply: rowsJSON(keyRow(f, "invented", "hallucinated_old", "new_key", q))})
+	sk0, sc0 := f.files(t)
+	sr, _, err := runDraft(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sr.Status != "pr" || checkState(sr.Rows[0], "S") == "pass" {
+		t.Fatalf("got %s %+v", sr.Status, sr.Rows)
+	}
+	assertUnchanged(t, f, sk0, sc0)
+}

@@ -126,20 +126,20 @@ func codexSchema(t *testing.T) *ConfigSchema {
 func TestCheckSConfigKey(t *testing.T) {
 	cs := codexSchema(t)
 	r := validRow()
-	if c := CheckS(r, cs, ""); !c.Ran || !c.Pass {
+	if c := checkSSeen(r, cs, ""); !c.Ran || !c.Pass {
 		t.Fatalf("real rename must pass S: %+v", c)
 	}
-	if !strings.Contains(CheckS(r, cs, "").Detail, cs.SHA) {
+	if !strings.Contains(checkSSeen(r, cs, "").Detail, cs.SHA) {
 		t.Error("S detail must carry the schema hash")
 	}
 	// Reverse direction: new is not a key, old still is.
 	r.Old, r.New = "model_instructions_file", "experimental_instructions_file"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatal("reverse rename passed S")
 	}
 	// Both current keys: old is not retired.
 	r.Old, r.New = "model", "model_provider"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatal("old still current passed S")
 	}
 	// Round 4: only the "deprecated": true keyword proves an old key
@@ -147,43 +147,43 @@ func TestCheckSConfigKey(t *testing.T) {
 	// old does not pass (intended flip). As new, the description still
 	// blocks: a "Deprecated…" description marks it deprecated.
 	r.Old, r.New = "personality", "model_verbosity"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatalf("description-only deprecation passed S: %+v", c)
 	}
 	r.Old, r.New = "experimental_instructions_file", "personality"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatalf("description-deprecated new passed S: %+v", c)
 	}
 	// Nested dotted path under features (additionalProperties false).
 	r.Old, r.New = "features.no_such_flag_xyz", "features.agent_message_board"
-	if c := CheckS(r, cs, ""); !c.Pass {
+	if c := checkSSeen(r, cs, ""); !c.Pass {
 		t.Fatalf("nested key must resolve: %+v", c)
 	}
 	r.Old, r.New = "x", "features.no_such_flag_xyz"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatal("unknown nested key passed S")
 	}
 	// Backticks around a bare key path are accepted.
 	r.Old, r.New = "`experimental_instructions_file`", "`model_instructions_file`"
-	if c := CheckS(r, cs, ""); !c.Pass {
+	if c := checkSSeen(r, cs, ""); !c.Pass {
 		t.Fatalf("backticked key path must pass: %+v", c)
 	}
 	// R2: an assignment carries a value S does not validate — never a pass,
 	// whether the value is valid or not.
 	for _, v := range []string{"model_instructions_file = 123", "model_instructions_file = \"/x\""} {
 		r.Old, r.New = "experimental_instructions_file", v
-		if c := CheckS(r, cs, ""); c.Ran || c.Pass {
+		if c := checkSSeen(r, cs, ""); c.Ran || c.Pass {
 			t.Fatalf("assignment %q must not run: %+v", v, c)
 		}
 	}
 	r.Old, r.New = "experimental_instructions_file = 1", "model_instructions_file"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatalf("assignment old must not pass: %+v", c)
 	}
 	// R1: a map with named settings beside it (AgentsToml: fixed keys plus
 	// additionalProperties → AgentRoleToml). A role's setting is current.
 	r.Old, r.New = "agents.reviewer.config_file", "model_instructions_file"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatalf("still-valid map entry passed as retired: %+v", c)
 	}
 	// Round 3 allowlist: agents is allOf/$ref to an object, so neither
@@ -193,13 +193,13 @@ func TestCheckSConfigKey(t *testing.T) {
 		{"agents.reviewer.no_such_setting", "agents.reviewer.config_file"},
 	} {
 		r.Old, r.New = kv[0], kv[1]
-		if c := CheckS(r, cs, ""); c.Ran || c.Pass || !strings.Contains(c.Detail, "too complex") {
+		if c := checkSSeen(r, cs, ""); c.Ran || c.Pass || !strings.Contains(c.Detail, "too complex") {
 			t.Fatalf("%v: map entry behind allOf/$ref must not run: %+v", kv, c)
 		}
 	}
 	// Not a key path at all.
 	r.Old, r.New = "experimental_instructions_file", "use the new file"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatal("prose new passed S")
 	}
 }
@@ -222,19 +222,19 @@ func TestCheckSFalseAndOpenSchemas(t *testing.T) {
 	}
 	r := Row{Kind: KindConfigKey}
 	r.Old, r.New = "gone_key", "dead_key"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatalf("false-schema new passed: %+v", c)
 	}
 	r.Old, r.New = "dead_key", "live_key"
-	if c := CheckS(r, cs, ""); c.Ran || c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Ran || c.Pass {
 		t.Fatalf("false-schema old is outside the allowlist, must not run: %+v", c)
 	}
 	r.Old, r.New = "open_map.anything", "live_key"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatalf("open (unconstrained) old passed as retired: %+v", c)
 	}
 	r.Old, r.New = "gone_key", "live_key"
-	if c := CheckS(r, cs, ""); !c.Pass {
+	if c := checkSSeen(r, cs, ""); !c.Pass {
 		t.Fatalf("refused old must pass: %+v", c)
 	}
 }
@@ -269,7 +269,7 @@ func TestCheckSAllowlist(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			c := CheckS(Row{Kind: KindConfigKey, Old: "old_key", New: "new_key"}, cs, "")
+			c := checkSSeen(Row{Kind: KindConfigKey, Old: "old_key", New: "new_key"}, cs, "")
 			if c.Pass != tc.pass {
 				t.Fatalf("pass=%v want %v: %+v", c.Pass, tc.pass, c)
 			}
@@ -288,25 +288,25 @@ func TestCheckSAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := CheckS(Row{Kind: KindConfigKey, Old: "gone", New: "t.k"}, cs, ""); c.Ran || c.Pass {
+	if c := checkSSeen(Row{Kind: KindConfigKey, Old: "gone", New: "t.k"}, cs, ""); c.Ran || c.Pass {
 		t.Fatalf("intermediate $ref must not run: %+v", c)
 	}
 }
 
 func TestCheckSNotRun(t *testing.T) {
 	r := validRow()
-	if c := CheckS(r, nil, ""); c.Ran || c.Pass || !strings.Contains(c.Detail, "no upkeep-schema-url") {
+	if c := checkSSeen(r, nil, ""); c.Ran || c.Pass || !strings.Contains(c.Detail, "no upkeep-schema-url") {
 		t.Fatalf("missing schema: %+v", c)
 	}
-	if c := CheckS(r, nil, "fetch failed"); c.Ran || c.Pass {
+	if c := checkSSeen(r, nil, "fetch failed"); c.Ran || c.Pass {
 		t.Fatalf("schema error must not run: %+v", c)
 	}
 	r.Kind = KindFlag
-	if c := CheckS(r, codexSchema(t), ""); c.Ran || c.Pass || !strings.Contains(c.Detail, "flag check deferred") {
+	if c := checkSSeen(r, codexSchema(t), ""); c.Ran || c.Pass || !strings.Contains(c.Detail, "flag check deferred") {
 		t.Fatalf("flag: %+v", c)
 	}
 	r.Kind = KindConcept
-	if c := CheckS(r, codexSchema(t), ""); c.Ran || c.Pass {
+	if c := checkSSeen(r, codexSchema(t), ""); c.Ran || c.Pass {
 		t.Fatalf("concept: %+v", c)
 	}
 }
@@ -513,17 +513,17 @@ func TestCheckSDeprecatedKeywordOnly(t *testing.T) {
 	}
 	r := validRow()
 	r.Old, r.New = "old_key", "new_key"
-	if c := CheckS(r, compile(`{"type":"string","deprecated":false,"description":"Deprecated? No, this setting is still supported."}`), ""); c.Pass {
+	if c := checkSSeen(r, compile(`{"type":"string","deprecated":false,"description":"Deprecated? No, this setting is still supported."}`), ""); c.Pass {
 		t.Fatalf("deprecated:false with deprecation wording passed S: %+v", c)
 	}
-	if c := CheckS(r, compile(`{"type":"string","description":"Deprecated: use new_key."}`), ""); c.Pass {
+	if c := checkSSeen(r, compile(`{"type":"string","description":"Deprecated: use new_key."}`), ""); c.Pass {
 		t.Fatalf("description-only deprecation passed S: %+v", c)
 	}
-	if c := CheckS(r, compile(`{"type":"string","deprecated":true}`), ""); !c.Pass {
+	if c := checkSSeen(r, compile(`{"type":"string","deprecated":true}`), ""); !c.Pass {
 		t.Fatalf("deprecated:true old must pass S: %+v", c)
 	}
 	r.New = "dep_new"
-	if c := CheckS(r, compile(`{"type":"string","deprecated":true}`), ""); c.Pass {
+	if c := checkSSeen(r, compile(`{"type":"string","deprecated":true}`), ""); c.Pass {
 		t.Fatalf("deprecated new passed S: %+v", c)
 	}
 }
@@ -543,19 +543,19 @@ func TestCheckSDeprecatedDescriptionBlocks(t *testing.T) {
 	r.Old, r.New = "old_key", "new_key"
 	for _, desc := range []string{"Deprecated: use other_key.", "  deprecated since 2.0", "DEPRECATED"} {
 		cs := compile(`{"type":"object","properties":{"new_key":{"type":"string","description":` + strconv.Quote(desc) + `}},"additionalProperties":false}`)
-		if c := CheckS(r, cs, ""); c.Pass {
+		if c := checkSSeen(r, cs, ""); c.Pass {
 			t.Fatalf("new with description %q passed S: %+v", desc, c)
 		}
 	}
 	cs := compile(`{"type":"object","properties":{"section":{"type":"object","description":"Deprecated: use other.","properties":{"new_key":{"type":"string"}},"additionalProperties":false}},"additionalProperties":false}`)
 	r.New = "section.new_key"
-	if c := CheckS(r, cs, ""); c.Pass {
+	if c := checkSSeen(r, cs, ""); c.Pass {
 		t.Fatalf("new under a deprecated intermediate passed S: %+v", c)
 	}
 	// A description that only mentions deprecation later does not block.
 	cs = compile(`{"type":"object","properties":{"new_key":{"type":"string","description":"Replaces the deprecated old_key."}},"additionalProperties":false}`)
 	r.New = "new_key"
-	if c := CheckS(r, cs, ""); !c.Pass {
+	if c := checkSSeen(r, cs, ""); !c.Pass {
 		t.Fatalf("non-leading deprecation wording blocked S: %+v", c)
 	}
 }
@@ -576,5 +576,47 @@ func TestCheckDAbsenceConservative(t *testing.T) {
 	}
 	if c := CheckD(r, "Use api.v2.", h); !c.Pass {
 		t.Fatalf("clean rename must pass D: %+v", c)
+	}
+}
+
+// checkSSeen runs CheckS with evidence that old existed (old in the
+// previous snapshot), so the schema logic is tested on its own.
+func checkSSeen(r Row, cs *ConfigSchema, schemaErr string) Check {
+	return CheckS(r, cs, schemaErr, History{Previous: "Earlier: " + r.Old + ".", HasPrevious: true})
+}
+
+// A closed object refuses any unknown name, so a refused old needs
+// independent evidence that it existed (CodeRabbit 4497176934).
+func TestCheckSRefusedOldNeedsEvidence(t *testing.T) {
+	cs, err := CompileConfigSchema([]byte(`{"type":"object","properties":{"new_key":{"type":"string"}},"additionalProperties":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := validRow()
+	r.Old, r.New = "hallucinated_old", "new_key"
+	none := History{Previous: "Some unrelated documentation.", HasPrevious: true}
+	if c := CheckS(r, cs, "", none); c.Pass || !strings.Contains(c.Detail, "old key has no history evidence") {
+		t.Fatalf("invented old passed S: %+v", c)
+	}
+	if c := CheckS(r, cs, "", History{}); c.Pass {
+		t.Fatalf("no history passed S: %+v", c)
+	}
+	// A longer identifier is not evidence.
+	if c := CheckS(r, cs, "", History{Previous: "Set hallucinated_old_x.", HasPrevious: true}); c.Pass {
+		t.Fatalf("prefix evidence passed S: %+v", c)
+	}
+	if c := CheckS(r, cs, "", History{Previous: "Set `hallucinated_old`.", HasPrevious: true}); !c.Pass {
+		t.Fatalf("previous-snapshot evidence must pass S: %+v", c)
+	}
+	if c := CheckS(r, cs, "", History{GitRan: true, GitFound: true}); !c.Pass || !strings.Contains(c.Detail, "git history") {
+		t.Fatalf("git evidence must pass S: %+v", c)
+	}
+	// A keyword-deprecated old needs no extra evidence.
+	cs, err = CompileConfigSchema([]byte(`{"type":"object","properties":{"hallucinated_old":{"type":"string","deprecated":true},"new_key":{"type":"string"}},"additionalProperties":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := CheckS(r, cs, "", History{}); !c.Pass {
+		t.Fatalf("deprecated:true old must pass S without history: %+v", c)
 	}
 }
