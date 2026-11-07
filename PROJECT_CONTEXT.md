@@ -27,9 +27,9 @@
 
 ## Current Status
 
-- **Last updated**: 2026-11-03
+- **Last updated**: 2026-11-07
 - **Current iteration goal**: Skill Engine — replace the scheduled Markdown-editing agent with a deterministic Go updater, agent update as fallback. Tracking issue: #1. Five rollout phases, one Issue each.
-- **Open PRs**: Skill Engine Phase 4a (part of #5: redirect drafting and the Q/S/D gate)
+- **Open PRs**: Skill Engine Phase 5 (part of #6: the GitHub Actions and launchd runners)
 - **Known tech debt**: see the bottom of `docs/feature-log.md`
 
 ---
@@ -38,7 +38,7 @@
 
 Every worker, QA and reviewer lane runs the same gate. Until the Go module exists (Phase 1 creates it), only the shell lines apply.
 
-- **Lint**: `gofmt -l .` (must print nothing) and `go vet ./...`; `shellcheck bin/upkeep.sh`
+- **Lint**: `gofmt -l .` (must print nothing) and `go vet ./...`; `shellcheck bin/upkeep.sh scripts/*.sh`; `actionlint .github/workflows/*.yml` (when actionlint is installed)
 - **Type check**: covered by `go build ./...`
 - **Static analysis**: `go vet ./...` (staticcheck not installed on the dev Mac; CI may add it)
 - **Dependency scan**: `go run golang.org/x/vuln/cmd/govulncheck@latest ./...`

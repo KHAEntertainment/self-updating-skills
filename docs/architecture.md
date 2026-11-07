@@ -40,6 +40,32 @@ How decision D8 is fed at runtime. All three metadata keys are optional; a check
 
 Routing per skill: the worst row outcome wins (hard stop > fallback > PR > auto). A changed page with no auto-accepted row on it also sends the skill to a PR, so `verified_sha` never advances without evidence. Only a non-empty draft whose every row auto-accepts is written, through the same lease-guarded write, strict check and rollback as an auto-advance. A row that edits an existing row (same id or same `old`) goes to a PR; a row whose `old` appears in a frozen block is a hard stop instead, which takes precedence. Two drafted rows with the same `old`, or a row whose `old` matches an existing row's, compared in the canonical form above, also go to a PR ("duplicate old", round 4). A draft whose page text and diffs exceed 400,000 bytes makes no model call and goes to a PR.
 
+## Runners (Phase 5)
+
+Decision D9: no daemon. Two runners, one per owner (decision P3).
+
+| | GitHub Actions | launchd |
+| --- | --- | --- |
+| Trigger | `schedule` (daily 06:17 UTC) and `workflow_dispatch` | `StartCalendarInterval` (daily 07:17 local) |
+| Scope | the skills in this repo whose sidecar says `"owner": "ci"` | the skills whose sidecar says `"owner": "local"` under `~/.agents/skills`, plus `git pull --ff-only` of this repo for the ci-owned ones |
+| Writes | one branch and one pull request per skill; an auto-accepted change is auto-merged with `gh pr merge --auto --squash` | in place under `~/.agents/skills` |
+| Gate | `upkeep check --strict`, `upkeep render --check`, the test suite (including the conformance matrix) | — |
+| Secrets | `ANTHROPIC_API_KEY` (repository secret) | `ANTHROPIC_API_KEY` from the user's keychain through Enigma, read at run time |
+
+**The local runner.** `upkeep install-agent` writes `~/Library/LaunchAgents/com.khaentertainment.upkeep.plist` and loads it (`launchctl bootstrap gui/$UID`); `launchctl print gui/$UID/com.khaentertainment.upkeep` shows it and `launchctl kickstart -k` runs it once, by hand. `--uninstall` unloads it (`launchctl bootout`) and removes the plist. The plist holds no secret: it names the job script (`scripts/upkeep-local-run.sh`) and the binary, and the script reads the API key from the keychain through Enigma when the job runs. Register the key once:
+
+```
+enigma add ANTHROPIC_API_KEY --scope global --depository keychain --usage unattended
+```
+
+**The link switch.** `upkeep install-agent --link` (explicit, never the default) makes every ci-owned `~/.agents/skills/<name>` a symlink into this repo's `skills/<name>`, and links every owned skill into every harness skills dir: `~/.claude/skills`, `~/.codex/skills`, `~/.config/opencode/skills`, `~/.gemini/config/skills` (the only dir Antigravity reads), `~/.gemini/skills`, `~/.cursor/skills` and `~/.openclaw/skills`. The harness links use the same `../`-relative style as the existing entries and are only created when the entry is missing: the existing harness symlinks stay unchanged and keep resolving through the chain. A directory that sits where a link has to go is moved to `~/.agents/upkeep/backup/<name>` and put back by `--uninstall`, which removes only the links the install created.
+
+**The CI runner.** `.github/workflows/upkeep.yml` runs `upkeep update --runner ci --json skills/*`, keeps the state database in `$RUNNER_TEMP/upkeep/state.db` (carried between runs by `actions/cache`), and publishes the run with `scripts/ci-publish.sh`: one branch and one pull request per skill, the pull request body listing every row with its checks and its evidence quote. An auto-accepted skill's pull request is auto-merged; a skill that needs a person (a PR-bound or fallback row) gets a pull request without auto-merge, carrying a `docs/upkeep/pending/<skill>.md` document with the rows.
+
+**The required-checks gate.** `.github/workflows/required-checks.yml` runs the test suite (including the conformance matrix) and `scripts/required-checks.sh`: `upkeep check --strict` on every skill, `upkeep render --check` on every skill with a sidecar, a tampered frozen block fails for any skill, and a skill the pull request touches must be fresh. Three of this repo's skills have no sidecar, so no runner owns them and their pins drift on their own; the gate therefore does not block on a skill the pull request does not touch, unless `UPKEEP_REQUIRE_ALL_SKILLS=1` is set. Turn that on once the skills are retrofitted with a sidecar and an owner.
+
+**The order to enable the auto-merge path.** The upstream pins have moved, so `upkeep check --strict` is red on the skills this repo does not own yet. Refresh the pins first (one `upkeep update` run, or a dispatch of the upkeep workflow before the branch protection is on), and only then make the required-checks job a branch-protection requirement on `main`.
+
 ## Out of scope (MVP)
 
 Importing existing or third-party skills; generating skills from a URL; the HTTP server and dashboard; a Bubble Tea UI; generated regions in `references/*.md`; FUSE or other virtual filesystems.
