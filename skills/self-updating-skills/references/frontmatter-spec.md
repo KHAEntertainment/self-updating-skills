@@ -85,7 +85,7 @@ The `!` dynamic injection gate at the top of `SKILL.md` is the same in every ski
 !`"${CLAUDE_SKILL_DIR}/scripts/upkeep.sh" check "${CLAUDE_SKILL_DIR}"`
 
 - If the line above was not expanded into a `VERDICT:` line (non-Claude harnesses), run `scripts/upkeep.sh check` from this skill's directory first.
-- **OpenCode** — After upkeep render/update changes this skill, restart OpenCode to load the new content.
+- **OpenCode** — After `upkeep render`/`update` rewrites this skill, restart OpenCode to load the new content.
 - **Antigravity** — If reading this skill's files is denied, read them with a shell command.
 ```
 

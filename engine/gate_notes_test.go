@@ -14,8 +14,8 @@ import (
 // Antigravity's view_file refuses a symlinked path that resolves outside
 // its allowed directories.
 const (
-	openCodeGateNote    = "After upkeep render/update changes this skill, restart OpenCode to load the new content."
-	antigravityGateNote = "If reading this skill's files is denied, read them with a shell command."
+	openCodeGateNote    = "**OpenCode** — After `upkeep render`/`update` rewrites this skill, restart OpenCode to load the new content."
+	antigravityGateNote = "**Antigravity** — If reading this skill's files is denied, read them with a shell command."
 )
 
 // TestGateNotesInTheMetaSkillTemplate checks the template a new skill is

@@ -32,7 +32,7 @@ skill is just a cache of them.
 !`"${CLAUDE_SKILL_DIR}/scripts/upkeep.sh" check "${CLAUDE_SKILL_DIR}"`
 
 - If the line above was not expanded into a `VERDICT:` line (non-Claude harnesses), run `scripts/upkeep.sh check` from this skill's directory first.
-- **OpenCode** — After upkeep render/update changes this skill, restart OpenCode to load the new content.
+- **OpenCode** — After `upkeep render`/`update` rewrites this skill, restart OpenCode to load the new content.
 - **Antigravity** — If reading this skill's files is denied, read them with a shell command.
 - **`VERDICT: TAMPERED`** → Stop immediately. A frozen owner-policy block was modified without authorization; revert or ask the user.
 - **`VERDICT: STALE`** → Cached references or version pins have drifted. Fetch the live page via `scripts/upkeep.sh fetch <page>` and re-verify before relying on the guidance below, then refresh the affected `Verified` dates and pins.
