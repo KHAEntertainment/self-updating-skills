@@ -26,6 +26,8 @@ Only content whose correctness is verifiable against an upstream source of truth
 !`"${CLAUDE_SKILL_DIR}/scripts/upkeep.sh" check "${CLAUDE_SKILL_DIR}"`
 
 - If the line above was not expanded into a `VERDICT:` line (non-Claude harnesses), run `scripts/upkeep.sh check` from this skill's directory first.
+- **OpenCode** — After upkeep render/update changes this skill, restart OpenCode to load the new content.
+- **Antigravity** — If reading this skill's files is denied, read them with a shell command.
 - **`VERDICT: TAMPERED`** → Stop immediately. A frozen owner-policy block was modified without authorization; revert or ask the user.
 - **`VERDICT: STALE`** → Cached references or version pins have drifted. Run `scripts/upkeep.sh fetch <page>` and rely on live docs before acting, then refresh the stale `references/` and `Verified` dates.
 - **`VERDICT: CONTENT-LAG`** → the upstream version moved and the update is pending review. Fetch the live page for anything version-sensitive before acting.
@@ -70,7 +72,22 @@ grep -n '^##' "$doc"
    - Pure taste/aesthetic skills → freeze entirely (do not attach version pins).
    - Library, CLI, cloud platform, or harness skills → split into Frozen policy, Cached redirect tables (`Verified YYYY-MM-DD`), and Volatile live docs.
 2. **Add `agentskills.io`-compliant `upkeep-*` metadata** to `SKILL.md` frontmatter using [`references/frontmatter-spec.md`](references/frontmatter-spec.md). Keep all `metadata` values as flat strings so `skills-ref validate` passes cleanly.
-3. **Wrap owner policy in `<!-- frozen:id -->` markers** and add the cross-harness `!` dynamic injection gate at the top of `SKILL.md`.
+3. **Wrap owner policy in `<!-- frozen:id -->` markers** and add the cross-harness `!` dynamic injection gate at the top of `SKILL.md`. The gate is the same in every skill — the two harness notes below are part of it, so a skill rendered from this template always carries them:
+
+   ```markdown
+   ## Freshness & Integrity Check
+
+   !`"${CLAUDE_SKILL_DIR}/scripts/upkeep.sh" check "${CLAUDE_SKILL_DIR}"`
+
+   - If the line above was not expanded into a `VERDICT:` line (non-Claude harnesses), run `scripts/upkeep.sh check` from this skill's directory first.
+   - **OpenCode** — After upkeep render/update changes this skill, restart OpenCode to load the new content.
+   - **Antigravity** — If reading this skill's files is denied, read them with a shell command.
+   - **`VERDICT: TAMPERED`** → Stop immediately. A frozen owner-policy block was modified without authorization; revert or ask the user.
+   - **`VERDICT: STALE`** → …
+   - **`VERDICT: FRESH`** → Proceed.
+   ```
+
+   Why the two harness notes: OpenCode caches the skill body at session start, so it only sees a re-render after a restart; Antigravity's `view_file` refuses a symlinked path that resolves outside its allowed directories, so the file has to be read with a shell command. Both were measured in the Phase 2 harness checks (issue #1, comment 6458680218) — a harness that misses the change only needs a restart note in its gate text.
 4. **Add the data sidecar and generated regions**: create `upkeep.data.json` next to `SKILL.md` (`schema: 1`; `pins` with `verified_for`, `latest_seen`, `checked_at`, `verified_at`; `docs`; `redirects`), then scaffold the three regions in `SKILL.md` — `<!-- generated:pins -->`, `<!-- generated:freshness -->`, `<!-- generated:redirects -->` — with any placeholder body line between the markers. Run `upkeep render <skill-dir>` (the Go engine binary): it renders the regions from the sidecar, writes the `upkeep-pins` and `upkeep-verified` frontmatter keys, and is byte-stable — a second render writes nothing. The renderer owns the regions and those two keys; hand edits inside them are overwritten on the next render and reported as `DRIFT` by `upkeep check`. Regions may never nest or overlap a frozen block; render refuses to run if they do.
 5. **Vendor `scripts/upkeep.sh`, stamp, and verify**:
    ```bash

@@ -24,6 +24,7 @@ func init() {
 	rootCmd.AddCommand(pollCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(installAgentCmd)
 }
 
 // Execute runs the root command.

@@ -74,3 +74,19 @@ Once a skill has an `upkeep.data.json` sidecar (next to `SKILL.md`, tracked in g
 - **`upkeep-verified`** is rendered from the newest `verified_at` across the sidecar's `pins` and `docs`.
 
 `upkeep render <skill-dir>` (the Go engine binary) rewrites both keys and the three generated regions from the sidecar — `<!-- generated:pins -->` (the package · verified for · latest seen · checked table), `<!-- generated:freshness -->` (`Verified <date> for <pkg>@<ver>` lines) and `<!-- generated:redirects -->` (the stale-habit → current table). Hand edits inside a generated region or to an owned key are overwritten on the next render and reported as `DRIFT` items by `upkeep check` (each item makes the overall verdict `STALE`). A malformed sidecar (unknown keys, a schema other than 1) makes `render` and `stamp` refuse to run; `check` still runs every frozen/date/pin check, reports the sidecar problem as a `DRIFT` item, and keeps the normal verdict precedence (a tampered frozen block still reads `VERDICT: TAMPERED`). Keep every other metadata key author-owned single-line YAML: multi-line block scalars for owned keys are normalized to flat lines by the next render.
+
+## 6. The Cross-Harness Gate
+
+The `!` dynamic injection gate at the top of `SKILL.md` is the same in every skill, and it carries the two harness notes every rendered skill must have:
+
+```markdown
+## Freshness & Integrity Check
+
+!`"${CLAUDE_SKILL_DIR}/scripts/upkeep.sh" check "${CLAUDE_SKILL_DIR}"`
+
+- If the line above was not expanded into a `VERDICT:` line (non-Claude harnesses), run `scripts/upkeep.sh check` from this skill's directory first.
+- **OpenCode** — After upkeep render/update changes this skill, restart OpenCode to load the new content.
+- **Antigravity** — If reading this skill's files is denied, read them with a shell command.
+```
+
+OpenCode caches the skill body at session start, so it sees a re-render only after a restart; Antigravity's `view_file` refuses a symlinked path that resolves outside its allowed directories, so the file has to be read with a shell command. Both come from the Phase 2 harness checks (issue #1, comment 6458680218). The gate template itself lives in the `self-updating-skills` meta-skill, which is what a new skill is scaffolded from.

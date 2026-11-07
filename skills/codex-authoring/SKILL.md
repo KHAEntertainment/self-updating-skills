@@ -27,6 +27,8 @@ OpenAI Codex ships breaking config, hook, subagent, and sandbox changes frequent
 !`"${CLAUDE_SKILL_DIR}/scripts/upkeep.sh" check "${CLAUDE_SKILL_DIR}"`
 
 - If the line above was not expanded into a `VERDICT:` line (non-Claude harnesses), run `scripts/upkeep.sh check` from this skill's directory first.
+- **OpenCode** — After upkeep render/update changes this skill, restart OpenCode to load the new content.
+- **Antigravity** — If reading this skill's files is denied, read them with a shell command.
 - **`VERDICT: TAMPERED`** → Stop immediately. A frozen owner-policy block was modified without authorization; revert or ask the user.
 - **`VERDICT: STALE`** → `@openai/codex` has bumped or reference dates exceeded 60 days. Fetch the live page via `scripts/upkeep.sh fetch <page>` before relying on cached guidance, then update the affected references and `Verified` dates.
 - **`VERDICT: FRESH`** → Proceed using the workflow and redirect table below.
