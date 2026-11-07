@@ -1,4 +1,4 @@
-name: upkeep
+name: Upkeep
 
 # The CI runner of the Skill Engine (architecture D9, decision P3).
 #
@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   update:
-    name: Update the ci-owned skills
+    name: update
     runs-on: ubuntu-latest
     env:
       # The key comes from the repository secret; it is never written to a

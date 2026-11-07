@@ -1,4 +1,4 @@
-name: required-checks
+name: Required checks
 
 # The gate every pull request to main has to pass (architecture D9).
 #
@@ -7,6 +7,9 @@ name: required-checks
 #     fails the job.
 #   * The test suite, including the conformance matrix that pins the Go
 #     engine's verdicts to the frozen shell script's.
+#
+# One job, id and name "required-checks": that is the status context the
+# branch protection on main requires.
 
 on:
   pull_request:
@@ -17,8 +20,8 @@ permissions:
   contents: read
 
 jobs:
-  verify:
-    name: Verify the skills
+  required-checks:
+    name: required-checks
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
@@ -39,5 +42,14 @@ jobs:
       - name: Tests (including the conformance matrix)
         run: go test -count=1 ./...
 
-      - name: upkeep check and upkeep render --check
+      - name: upkeep check --strict and upkeep render --check
+        env:
+          # Set to "1" to gate the job on every skill, not only on the
+          # skills the pull request touches. Turn it on once the skills
+          # without a sidecar are retrofitted with an owner: three of
+          # this repo's skills have no sidecar, so no runner owns them
+          # and their pins drift on their own — gating on all of them
+          # would keep the job red and block every merge, including the
+          # updater's own pull requests.
+          UPKEEP_REQUIRE_ALL_SKILLS: ""
         run: bash scripts/required-checks.sh "$RUNNER_TEMP/upkeep" origin/main
