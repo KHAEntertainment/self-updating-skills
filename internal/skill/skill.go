@@ -39,6 +39,14 @@ type Sources struct {
 	// including an explicitly empty one, which retires all pages — from an
 	// absent one, which falls back to the sidecar's docs keys (C2).
 	PagesDeclared bool
+	// SchemaURL (upkeep-schema-url) is the harness's published config JSON
+	// schema, used by the S check on config-key redirect rows.
+	SchemaURL string
+	// DocsRepo and DocsPath (upkeep-docs-repo, upkeep-docs-path) name the
+	// git repository and in-repo path of git-hosted docs, used by the D
+	// check's history lookup.
+	DocsRepo string
+	DocsPath string
 }
 
 // FrozenEntry is a recorded frozen-block id/hash pair, in metadata order.
@@ -250,6 +258,9 @@ func ParseFrontmatter(skPath string) Config {
 		IndexURL:      srcScalar(flat, "upkeep-source-index", srcStr, "index_url", ""),
 		Pages:         pages,
 		PagesDeclared: pagesDeclared,
+		SchemaURL:     srcScalar(flat, "upkeep-schema-url", srcStr, "schema_url", ""),
+		DocsRepo:      srcScalar(flat, "upkeep-docs-repo", srcStr, "docs_repo", ""),
+		DocsPath:      srcScalar(flat, "upkeep-docs-path", srcStr, "docs_path", ""),
 	}
 	ttl := srcScalar(flat, "upkeep-source-ttl", srcStr, "ttl_minutes", "720")
 	if n, err := strconv.Atoi(ttl); err == nil {

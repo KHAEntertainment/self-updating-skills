@@ -162,7 +162,7 @@ func Update(ctx context.Context, dirs []string, opts UpdateOptions) (*UpdateResu
 		report = reportJSON(map[string]string{"error": err.Error()})
 		return nil, &Error{Op: "plan", Path: path, Err: err}
 	}
-	results, err = applyPlan(ctx, st, holder, plan, opts.Runner)
+	results, err = applyPlan(ctx, st, holder, plan, opts.Runner, runID)
 	if err != nil {
 		report = reportJSON(struct {
 			Plan    *UpdatePlan   `json:"plan"`

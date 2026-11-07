@@ -27,9 +27,9 @@
 
 ## Current Status
 
-- **Last updated**: 2026-10-27
+- **Last updated**: 2026-11-03
 - **Current iteration goal**: Skill Engine — replace the scheduled Markdown-editing agent with a deterministic Go updater, agent update as fallback. Tracking issue: #1. Five rollout phases, one Issue each.
-- **Open PRs**: #13 skill engine Phase 3 (deterministic updater: poll, auto-advance, CONTENT-LAG, lease)
+- **Open PRs**: Skill Engine Phase 4a (part of #5: redirect drafting and the Q/S/D gate)
 - **Known tech debt**: see the bottom of `docs/feature-log.md`
 
 ---

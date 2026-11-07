@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/KHAEntertainment/self-updating-skills/internal/redirect"
 	"github.com/KHAEntertainment/self-updating-skills/internal/source"
 )
 
@@ -85,6 +86,11 @@ type SkillResult struct {
 	DraftPins  []string  `json:"draft_pins,omitempty"`
 	DraftPages []string  `json:"draft_pages,omitempty"`
 	Error      string    `json:"error,omitempty"`
+	// Outcome is the drafting gate's skill outcome (auto, pr, fallback or
+	// hard_stop) for a skill that went through drafting; Rows carries each
+	// row with its checks, outcome, evidence quote and snapshot hash.
+	Outcome string               `json:"outcome,omitempty"`
+	Rows    []redirect.RowResult `json:"rows,omitempty"`
 }
 
 // shaRe matches the SHA pin identity form (same shape as check.isSha).

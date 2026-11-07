@@ -24,7 +24,8 @@ type ApplyOptions struct {
 }
 
 // ApplyResult is the outcome of applying a plan: per-skill outcomes plus
-// the (Phase 3 empty) PR/fallback collections the planned API reserves.
+// the skills whose drafts are PR-bound or need the agent fallback. Phase
+// 4a only reports them; opening the PR or fallback issue is Phase 4b.
 type ApplyResult struct {
 	SkippedLease bool          `json:"skipped_lease,omitempty"`
 	Skills       []SkillResult `json:"skills"`
@@ -74,7 +75,8 @@ func Apply(ctx context.Context, plan *UpdatePlan, opts ApplyOptions) (*ApplyResu
 	if runner == "" {
 		runner = "local"
 	}
-	results, err := applyPlan(ctx, st, holder, plan, runner)
+	// The public Apply has no run record, so no row verdicts are stored.
+	results, err := applyPlan(ctx, st, holder, plan, runner, 0)
 	if err != nil {
 		return &ApplyResult{Skills: results}, err
 	}
@@ -82,14 +84,26 @@ func Apply(ctx context.Context, plan *UpdatePlan, opts ApplyOptions) (*ApplyResu
 		return &ApplyResult{Skills: results}, &Error{Op: "lease", Path: path, Err: err}
 	}
 	released = true
-	return &ApplyResult{Skills: results, Prs: []any{}, Fallbacks: []any{}}, nil
+	res := &ApplyResult{Skills: results, Prs: []any{}, Fallbacks: []any{}}
+	for _, r := range results {
+		switch r.Status {
+		case "pr":
+			res.Prs = append(res.Prs, r)
+		case "fallback":
+			res.Fallbacks = append(res.Fallbacks, r)
+		}
+	}
+	return res, nil
 }
 
 // applyPlan executes a plan while the caller holds the update lease. It
 // renews ownership before every skill (writing or not) so a lease lost to
 // expiry takeover stops the whole cycle at once — no further writes for
-// any skill. Individual skill failures continue the cycle.
-func applyPlan(ctx context.Context, st *store.Store, holder string, plan *UpdatePlan, runner string) ([]SkillResult, error) {
+// any skill. Individual skill failures continue the cycle. A "draft"
+// skill goes through the drafting gate (draftOne), an "advance" skill
+// through applyOne; every other status is reported as planned. Drafted
+// rows' verdicts are recorded under runID (0 records none).
+func applyPlan(ctx context.Context, st *store.Store, holder string, plan *UpdatePlan, runner string, runID int64) ([]SkillResult, error) {
 	results := make([]SkillResult, 0, len(plan.Skills))
 	for i := range plan.Skills {
 		sp := &plan.Skills[i]
@@ -101,11 +115,16 @@ func applyPlan(ctx context.Context, st *store.Store, holder string, plan *Update
 			results = append(results, SkillResult{SkillDir: sp.SkillDir, Status: "failed", Reason: "lease lost"})
 			return results, ErrLeaseLost
 		}
-		if sp.Status != "advance" {
+		var sr SkillResult
+		switch sp.Status {
+		case "advance":
+			sr, err = applyOne(ctx, st, holder, sp, runner)
+		case "draft":
+			sr, err = draftOne(ctx, st, holder, sp, runner, runID)
+		default:
 			results = append(results, SkillResult{SkillDir: sp.SkillDir, Status: sp.Status, Reason: sp.Reason, DraftPins: sp.DraftPins, DraftPages: sp.DraftPages})
 			continue
 		}
-		sr, err := applyOne(ctx, st, holder, sp, runner)
 		if err != nil {
 			sr.Status = "failed"
 			sr.Error = err.Error()
@@ -170,6 +189,26 @@ func applyOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan
 		}
 	}
 
+	return commitWrite(ctx, st, holder, abs, sc, sr, func(sc *render.Sidecar) {
+		today := time.Now().Format("2006-01-02")
+		for _, adv := range sp.Advances {
+			p := sc.Pins[adv.Pin]
+			p.VerifiedFor = adv.To
+			p.VerifiedAt = today
+			p.CheckedAt = today
+			sc.Pins[adv.Pin] = p
+		}
+	})
+}
+
+// commitWrite is the single lease-guarded write path shared by advances
+// and auto-accepted drafts: snapshot the current sidecar and SKILL.md,
+// apply mutate to sc, render, renew the lease immediately before the write
+// (L1), write sidecar then SKILL.md, run the strict check, verify
+// ownership again (L2), and require FRESH. Any failure rolls both files
+// back through fail(), which never restores after a lost lease.
+func commitWrite(ctx context.Context, st *store.Store, holder, abs string, sc *render.Sidecar, sr SkillResult, mutate func(*render.Sidecar)) (SkillResult, error) {
+	sk := filepath.Join(abs, render.SkillName)
 	sidecarPath := filepath.Join(abs, render.SidecarName)
 	origSC, err := os.ReadFile(sidecarPath)
 	if err != nil {
@@ -211,14 +250,7 @@ func applyOne(ctx context.Context, st *store.Store, holder string, sp *SkillPlan
 		return sr, primary
 	}
 
-	today := time.Now().Format("2006-01-02")
-	for _, adv := range sp.Advances {
-		p := sc.Pins[adv.Pin]
-		p.VerifiedFor = adv.To
-		p.VerifiedAt = today
-		p.CheckedAt = today
-		sc.Pins[adv.Pin] = p
-	}
+	mutate(sc)
 
 	raw, err := os.ReadFile(sk)
 	if err != nil {

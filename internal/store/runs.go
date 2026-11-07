@@ -71,3 +71,75 @@ VALUES(?,?,?,?,?,?,?)`,
 	}
 	return nil
 }
+
+// RowVerdictInput is one verdict for SaveRowVerdicts.
+type RowVerdictInput struct {
+	RowJSON, ChecksJSON, Outcome, Quote, SnapshotSHA string
+}
+
+// SaveRowVerdicts records a skill's verdicts for a run in one
+// transaction: all of them or none, so status never lists half a draft.
+func (s *Store) SaveRowVerdicts(ctx context.Context, runID int64, skill string, vs []RowVerdictInput) (err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save row verdicts: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, v := range vs {
+		if _, err = tx.ExecContext(ctx, `
+INSERT INTO row_verdicts(run_id, skill, row_json, checks_json, outcome, quote, snapshot_sha)
+VALUES(?,?,?,?,?,?,?)`,
+			runID, skill, v.RowJSON, v.ChecksJSON, v.Outcome, v.Quote, v.SnapshotSHA); err != nil {
+			return fmt.Errorf("save row verdicts: %w", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("save row verdicts: %w", err)
+	}
+	return nil
+}
+
+// RowVerdict is one stored redirect-row verdict.
+type RowVerdict struct {
+	RunID       int64  `json:"run_id"`
+	Skill       string `json:"skill"`
+	RowJSON     string `json:"row"`
+	ChecksJSON  string `json:"checks"`
+	Outcome     string `json:"outcome"`
+	Quote       string `json:"quote"`
+	SnapshotSHA string `json:"snapshot_sha"`
+}
+
+// PendingRowVerdicts returns, for every skill, the row verdicts of the
+// most recent run that drafted it, keeping only rows that still need a
+// person: pr, fallback and hard_stop outcomes. A later run that
+// auto-accepted the skill's rows replaces the earlier pending items.
+func (s *Store) PendingRowVerdicts(ctx context.Context) ([]RowVerdict, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT v.run_id, v.skill, v.row_json, v.checks_json, v.outcome, v.quote, v.snapshot_sha
+FROM row_verdicts v
+JOIN (SELECT skill, MAX(run_id) AS run_id FROM row_verdicts GROUP BY skill) latest
+  ON latest.skill = v.skill AND latest.run_id = v.run_id
+WHERE v.outcome IN ('pr', 'fallback', 'hard_stop')
+ORDER BY v.skill, v.rowid`)
+	if err != nil {
+		return nil, fmt.Errorf("pending row verdicts: %w", err)
+	}
+	defer rows.Close()
+	var out []RowVerdict
+	for rows.Next() {
+		var v RowVerdict
+		if err := rows.Scan(&v.RunID, &v.Skill, &v.RowJSON, &v.ChecksJSON, &v.Outcome, &v.Quote, &v.SnapshotSHA); err != nil {
+			return nil, fmt.Errorf("pending row verdicts: %w", err)
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pending row verdicts: %w", err)
+	}
+	return out, nil
+}

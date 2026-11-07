@@ -66,6 +66,17 @@ func FetchPage(ctx context.Context, baseURL, page, ext string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", full, err)
 	}
+	body, err := get(ctx, full, u)
+	if err != nil {
+		return nil, err
+	}
+	return SanitizeDoc(body), nil
+}
+
+// get fetches one URL under the page rules: https only on the initial URL
+// and on every redirect (unless the test seam is on), HTTP 200 only, and
+// at most maxPageBytes. full is the URL as configured, for error text.
+func get(ctx context.Context, full string, u *url.URL) ([]byte, error) {
 	if u.Scheme != "https" && AllowInsecureHTTP == "" {
 		return nil, fmt.Errorf("fetch %s: non-https scheme %q refused", full, u.Scheme)
 	}
@@ -88,7 +99,7 @@ func FetchPage(ctx context.Context, baseURL, page, ext string) ([]byte, error) {
 	if len(body) > maxPageBytes {
 		return nil, fmt.Errorf("fetch %s: page exceeds %d bytes", full, maxPageBytes)
 	}
-	return SanitizeDoc(body), nil
+	return body, nil
 }
 
 // SanitizeDoc strips frozen/generated region marker tags from fetched doc
