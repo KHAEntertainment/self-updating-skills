@@ -9,6 +9,9 @@
      "expected_output": "~/.claude/skills/release-notes/SKILL.md (not commands/), frontmatter disable-model-invocation: true, context: fork, argument handling via $ARGUMENTS/$0/arguments, argument-hint; no version: field.", "files": []},
     {"id": 2, "name": "plugin-subagent-mcp",
      "prompt": "In my plugin `acme-tools` I'm adding agents/db-auditor.md. It needs its own postgres MCP server (npx @acme/pg-mcp) and should run with permissionMode acceptEdits so it can write reports without prompting. Write the agent file and whatever else is needed.",
-     "expected_output": "Flags that plugin subagents ignore mcpServers and permissionMode; puts the MCP server in the plugin's .mcp.json (with ${CLAUDE_PLUGIN_ROOT} if paths), and addresses the permission need another way.", "files": []}
+     "expected_output": "Flags that plugin subagents ignore mcpServers and permissionMode; puts the MCP server in the plugin's .mcp.json (with ${CLAUDE_PLUGIN_ROOT} if paths), and addresses the permission need another way.", "files": []},
+    {"id": 3, "name": "plugin-user-config",
+     "prompt": "My plugin `acme-tools` wraps an internal API through an MCP server. Users must give it a base URL, an API token, and pick read-only or read-write mode, and I don't want them editing settings.json. Add that to plugin.json and make a SessionStart hook that warns if the token is missing.",
+     "expected_output": "userConfig with title/description/type on each option, api_token sensitive: true, mode with options and a safe read-only default; ${user_config.KEY} in the MCP server env; the hook reads CLAUDE_PLUGIN_OPTION_API_TOKEN (or uses exec-form args), never ${user_config.*} in a shell-form command; never prints the token.", "files": []}
   ]
 }
