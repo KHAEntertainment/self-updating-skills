@@ -2,7 +2,8 @@
 
 Verified against https://code.claude.com/docs/en/plugins-reference.md and
 plugin-evals.md on 2026-11-03. The "Plugin options" section was verified on
-2026-11-11 against plugins-reference, settings-reference, hooks and mcp, plus
+2026-11-11 against plugins-reference, settings-reference, hooks, mcp and
+plugins/mods/reference, plus
 Claude Code 2.1.322. Live page wins on any conflict.
 
 ## Layout (auto-discovered)
@@ -77,8 +78,16 @@ first; it is short.
   keychain or credentials file to inspect them.
 - **Use a value:** `${user_config.KEY}` in MCP and LSP config, in exec-form
   hook `command`/`args`, and in skill and agent text (non-sensitive only; a
-  sensitive value there becomes a placeholder). Hooks also get every option
-  as `CLAUDE_PLUGIN_OPTION_<KEY>` (uppercased).
+  sensitive value there becomes a placeholder). Command hooks also get every
+  option as `CLAUDE_PLUGIN_OPTION_<KEY>` (uppercased).
+- **Mod hook modules are different:** a mod's hooks module exports
+  `register(on, options)`, and `options` already holds the manifest's
+  `userConfig` values with defaults filled in (`plugins/mods/reference`). Read
+  `options.<key>` there; don't parse `CLAUDE_PLUGIN_OPTION_*` or `${user_config}`
+  in a module. The mods docs don't say whether `sensitive` values appear in
+  `options`, so don't assume it. Local example: the `handoff` mod declares
+  `thresholdPercent` (number, default 80) and `autoCompact` (boolean, default
+  true) and reads both in `register` (v0.2.1; config UI path not exercised).
 - **Never `${user_config.*}` in** shell-form hook commands, monitor commands
   or MCP `headersHelper`: Claude Code refuses to start the component, even
   with no value set. Use exec form, the env var, or the server's `headers`.
