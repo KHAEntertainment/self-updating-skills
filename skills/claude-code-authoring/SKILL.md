@@ -122,6 +122,12 @@ that rot.
   run in a subagent, `allowed-tools` to pre-approve tools for that turn.
 - **Plugin subagents ignore `hooks`, `mcpServers` and `permissionMode`.** Put those
   in the plugin's `hooks/hooks.json` / `.mcp.json` instead.
+- **Prompt for plugin config with `userConfig`**, not hand-edited settings.
+  Secrets get `sensitive: true`; reference values as `${user_config.KEY}` in
+  MCP config and exec-form hooks, or `CLAUDE_PLUGIN_OPTION_<KEY>` in command
+  hooks; a mod's `register(on, options)` gets them as `options`. Never
+  `${user_config.*}` in shell-form hooks, monitors or `headersHelper`.
+  Details in `references/plugins.md` (verified 2026-11-11).
 - **Hooks have five handler types** (`command`, `http`, `mcp_tool`, `prompt`,
   `agent`). Narrow tool hooks with the `if` field (permission-rule syntax), not
   only `matcher`. Treat `if` as best-effort, and use permission rules for hard
