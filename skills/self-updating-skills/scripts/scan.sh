@@ -11,8 +11,10 @@
 # Writes nothing: no cache, no temp files, no edits, and the npm CLI (which keeps a cache and
 # logs) is never run. Scanned folders are treated as hostile input: nothing in them is executed
 # or imported, and git is run only as `git ls-remote` for GitHub pins, from /, https only, with
-# no repository or user configuration. Needs bash and stdlib python3. Always exits 0.
-# SKILL_SCAN_NPM_REGISTRY and SKILL_SCAN_PYPI_INDEX point the lookups at a mirror.
+# no repository or user configuration. Every file is read through one reader that refuses
+# special files and files over 4 MB. Needs bash and stdlib python3. Always exits 0.
+# SKILL_SCAN_NPM_REGISTRY and SKILL_SCAN_PYPI_INDEX point the lookups at a mirror;
+# SKILL_SCAN_CHECK_SECONDS (default 120) is the time allowed for one skill's check.
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +22,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # -I keeps the current directory and user site-packages off sys.path, so a file in a scanned
 # or downloaded folder can never be imported.
 exec python3 -I - "$SELF_DIR/upkeep.sh" "$@" <<'PY'
-import collections, contextlib, hashlib, io, json, os, pathlib, re, signal, subprocess, sys
+import collections, contextlib, hashlib, io, json, os, pathlib, re, signal, stat, subprocess, sys
 import urllib.parse, urllib.request
 
 upkeep, args = sys.argv[1], sys.argv[2:]
@@ -30,6 +32,11 @@ DEFAULT_ROOTS = [".agents/skills", ".claude/skills", ".codex/skills", ".config/o
 SKIP = {".git", "node_modules"}
 NPM_REGISTRY = os.environ.get("SKILL_SCAN_NPM_REGISTRY", "https://registry.npmjs.org").rstrip("/")
 PYPI_INDEX = os.environ.get("SKILL_SCAN_PYPI_INDEX", "https://pypi.org/pypi").rstrip("/")
+try:
+    CHECK_SECONDS = max(1, int(os.environ.get("SKILL_SCAN_CHECK_SECONDS", "120")))
+except ValueError:
+    CHECK_SECONDS = 120
+LIMIT = 4 << 20  # bytes; no SKILL.md, reference, lock file or git config is read past this
 
 as_json = offline = only = False
 owners, paths = set(), []
@@ -57,12 +64,20 @@ while i < len(args):
 
 problems = []  # what could not be read; the rest of the report still stands
 
-def head(path, limit=4 << 20):
-    """Text of a regular file, capped. Anything else raises: a FIFO or a device would block."""
-    if not path.is_file():
-        raise OSError("not a regular file")
-    with open(path, encoding="utf-8", errors="replace") as f:
-        return f.read(limit)
+def read_file(path, limit=LIMIT):
+    """Bytes of a regular file of at most `limit` bytes. Anything else raises OSError: the open
+    cannot block on a FIFO or a device, and a longer file is refused, never cut short."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0))
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file")
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise OSError(f"larger than {limit} bytes")
+    return data
+
+def read_text(path, limit=LIMIT):
+    return read_file(path, limit).decode("utf-8", "replace")
 
 # === 1. FIND ===
 def find(p, depth, top=True):
@@ -99,7 +114,7 @@ for root, depth in roots:
 
 # === 2. TRIAGE ===
 try:
-    lock = json.loads(head(HOME / ".agents/.skill-lock.json"))["skills"]
+    lock = json.loads(read_text(HOME / ".agents/.skill-lock.json"))["skills"]
     lock = lock if isinstance(lock, dict) else {}
 except (OSError, ValueError, KeyError, TypeError):
     lock = {}
@@ -114,11 +129,11 @@ def origin_url(top):
     try:
         gitdir = top / ".git"
         if gitdir.is_file():  # a worktree or submodule: "gitdir: <path>"
-            m = re.match(r'gitdir:\s*(.+)', head(gitdir, 4096))
+            m = re.match(r'gitdir:\s*(.+)', read_text(gitdir, 4096))
             gitdir = top / m.group(1).strip() if m else gitdir
             if (gitdir / "commondir").is_file():
-                gitdir = gitdir / head(gitdir / "commondir", 4096).strip()
-        text = head(gitdir / "config", 1 << 20)
+                gitdir = gitdir / read_text(gitdir / "commondir", 4096).strip()
+        text = read_text(gitdir / "config", 1 << 20)
     except OSError:
         return ""
     section = ""
@@ -185,7 +200,7 @@ def ver(v):
 def latest(registry, pkg):
     """Latest release from the registry over HTTPS, or None. One request per package per run."""
     if (registry, pkg) not in latest_cache:
-        latest_cache[registry, pkg] = None
+        found = None
         if re.fullmatch(PACKAGE, pkg, re.I):
             if registry == "npm":
                 url, key = f"{NPM_REGISTRY}/{urllib.parse.quote(pkg, safe='@')}/latest", None
@@ -194,9 +209,10 @@ def latest(registry, pkg):
             try:
                 with urllib.request.urlopen(url, timeout=8) as r:
                     data = json.loads(r.read(8 << 20))
-                latest_cache[registry, pkg] = str((data[key] if key else data)["version"])
+                found = str((data[key] if key else data)["version"])
             except Exception:
                 pass
+        latest_cache[registry, pkg] = found  # only a finished lookup is remembered
     return latest_cache[registry, pkg]
 
 def signals(body):
@@ -209,14 +225,27 @@ def signals(body):
     top = sorted(seen.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:3]
     return [{"registry": r, "package": p, "written": max(vs, key=ver)} for (r, p), vs in top]
 
-real_check_output, check_code, lookups = subprocess.check_output, None, [0]
+MAX_LOOKUPS = 30
+real_check_output, real_path_read_text = subprocess.check_output, pathlib.Path.read_text
+check_code, lookups = None, [0]
+
+class CheckAbort(BaseException):
+    """Stops a check for good. Not an Exception on purpose: the check code and latest() both
+    catch Exception around a lookup, and would otherwise carry on past a deadline or a limit."""
+
+def checked_read_text(self, encoding=None, errors=None):
+    """Path.read_text while the check runs: every file it opens goes through read_file."""
+    try:
+        return read_file(self).decode(encoding or "utf-8", errors or "strict")
+    except OSError as e:
+        raise CheckAbort(f"{self.name}: {e.strerror or e}")
 
 def tool_output(cmd, **kw):
     """Answers the two commands the check runs. `npm view` comes from the registry instead, and
     `git ls-remote` runs where no repository, user or system configuration can steer it."""
     lookups[0] -= 1
     if lookups[0] < 0:
-        raise OSError("lookup budget spent")
+        raise CheckAbort(f"more than {MAX_LOOKUPS} pins")
     if cmd[:2] == ["npm", "view"]:
         found = latest("npm", cmd[2])
         if not found:
@@ -230,7 +259,7 @@ def tool_output(cmd, **kw):
     raise OSError("not allowed")
 
 def on_alarm(signum, frame):
-    raise TimeoutError("check timed out")
+    raise CheckAbort(f"timed out after {CHECK_SECONDS} s")
 
 def run_check(real):
     """(verdict, detail) from the check code of the upkeep.sh next to this file, run inside this
@@ -238,31 +267,37 @@ def run_check(real):
     global check_code
     try:
         if check_code is None:
-            src = pathlib.Path(upkeep).read_text(encoding="utf-8")
+            src = read_text(pathlib.Path(upkeep))
             check_code = compile(src.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0], upkeep, "exec")
     except (OSError, IndexError, SyntaxError, ValueError):
         return "UNKNOWN", "upkeep.sh is not next to scan.sh"
-    out, argv, note = io.StringIO(), sys.argv, ""
-    lookups[0] = 30  # a hostile pin list cannot run the scan forever
-    sys.argv = [upkeep, "check", str(real), str(real)]
-    subprocess.check_output = tool_output
-    if hasattr(signal, "SIGALRM"):
-        signal.signal(signal.SIGALRM, on_alarm)
-        signal.alarm(120)
+    out, argv = io.StringIO(), sys.argv
+    lookups[0] = MAX_LOOKUPS  # a hostile pin list cannot run the scan forever
     try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            exec(check_code, {"__name__": "__main__"})
+        try:
+            sys.argv = [upkeep, "check", str(real), str(real)]
+            subprocess.check_output, pathlib.Path.read_text = tool_output, checked_read_text
+            if hasattr(signal, "SIGALRM"):
+                signal.signal(signal.SIGALRM, on_alarm)
+                signal.alarm(CHECK_SECONDS)
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                exec(check_code, {"__name__": "__main__"})
+        finally:
+            if hasattr(signal, "SIGALRM"):
+                signal.alarm(0)
+            sys.argv = argv
+            subprocess.check_output, pathlib.Path.read_text = real_check_output, real_path_read_text
     except SystemExit:
         pass
+    except CheckAbort as e:  # whatever was printed so far is not a verdict
+        return "UNKNOWN", f"check stopped: {e}"
     except Exception as e:
-        note = f"check failed: {type(e).__name__}"
-    finally:
-        if hasattr(signal, "SIGALRM"):
-            signal.alarm(0)
-        sys.argv, subprocess.check_output = argv, real_check_output
+        return "UNKNOWN", f"check failed: {type(e).__name__}"
     m = re.search(r'^VERDICT: (\w+)', out.getvalue(), re.M)
-    flagged = re.findall(r'^(?:STALE|TAMPERED|MISSING|UNSTAMPED)\s+(.+?)\s*$', out.getvalue(), re.M)
-    return (m.group(1) if m else "UNKNOWN"), note or "; ".join(re.sub(r'\s+', ' ', f) for f in flagged[:3])
+    # An unresolved pin does not change the verdict, so it is listed: FRESH with one is not proven.
+    flagged = re.findall(r'^(?:STALE|TAMPERED|MISSING|UNSTAMPED|UNKNOWN(?=\s+pin:))\s+(.+?)\s*$',
+                         out.getvalue(), re.M)
+    return (m.group(1) if m else "UNKNOWN"), "; ".join(re.sub(r'\s+', ' ', f) for f in flagged[:3])
 
 def scan(real, text, self_updating):
     """(state, detail, signals)."""
@@ -293,26 +328,31 @@ for real, links in sorted(skills.items()):
            "state": "UNREADABLE", "detail": "", "signals": [], "sha256": ""}
     rows.append(row)  # the folder name is the skill's identity (the spec requires `name` to match it)
     try:
-        text = head(real / "SKILL.md")
+        data = read_file(real / "SKILL.md")
     except OSError as e:
         row["detail"] = e.strerror or str(e)
         problems.append(f"{real / 'SKILL.md'}: {row['detail']}")
         continue
+    text = data.decode("utf-8", "replace")
     fm = re.match(r'---\r?\n(.*?)\r?\n---', text, re.S)
     fm = fm.group(1) if fm else ""
     nm = re.search(r'^name:\s*["\']?([^"\'\n#]+)', fm, re.M)
     # Any upkeep-* key counts: a freeze-only skill has a stamp and no pins.
     row["self_updating"] = bool(re.search(r'^\s{2,}upkeep-[a-z0-9-]+\s*:|^\s{2}pins:\s*$', fm, re.M))
     row["frontmatter_name"] = nm.group(1).strip() if nm else ""
-    row["sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-    row["state"], row["detail"], row["signals"] = scan(real, text, row["self_updating"])
+    row["sha256"] = hashlib.sha256(data).hexdigest()[:16]  # of the whole file, never of a prefix
+    try:
+        row["state"], row["detail"], row["signals"] = scan(real, text, row["self_updating"])
+    except CheckAbort as e:  # a deadline that fired outside the check's own handler
+        row["state"], row["detail"] = "UNKNOWN", f"check stopped: {e}"
 
 by_name = collections.defaultdict(list)
 for r in rows:
     by_name[r["name"]].append(r)
 for r in rows:
     r["copies"] = len(by_name[r["name"]])
-    r["copies_identical"] = len({c["sha256"] for c in by_name[r["name"]]}) == 1
+    hashes = {c["sha256"] for c in by_name[r["name"]]}
+    r["copies_identical"] = None if "" in hashes else len(hashes) == 1  # None: a copy was not read
 
 summary = {"roots": len(roots) - len(missing), "missing_roots": missing, "broken_links": broken,
            "problems": problems, "entries": entries, "skill_folders": len(rows), "names": len(by_name),
@@ -342,12 +382,13 @@ if rows:
     print(f"\n{'NAME':<{w}}  {'ORIGIN':<9}  {'STATE':<11}  COPIES  SOURCE / DETAIL")
     printed = set()
     for r in rows:
-        copies = "1" if r["copies"] == 1 else f"{r['copies']}{'=' if r['copies_identical'] else '≠'}"
+        mark = {True: "=", False: "≠", None: "?"}[r["copies_identical"]]
+        copies = "1" if r["copies"] == 1 else f"{r['copies']}{mark}"
         differs = r["path"].replace(str(HOME), "~", 1) if r["copies"] > 1 and not r["copies_identical"] else ""
         tail = " — ".join(x for x in (r["source"], r["detail"], differs) if x)
         line = f"{r['name'][:w]:<{w}}  {r['origin']:<9}  {r['state']:<11}  {copies:<6}  {tail}"
         if (line, r["sha256"]) not in printed:  # identical copies print once
             printed.add((line, r["sha256"]))
             print(line)
-    print("\nCOPIES: '=' every copy has the same SKILL.md, '≠' they differ. Paths: --json.")
+    print("\nCOPIES: '=' every copy has the same SKILL.md, '≠' they differ, '?' one could not be read. Paths: --json.")
 PY

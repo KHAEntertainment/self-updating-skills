@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -225,14 +226,21 @@ func TestScanScriptHostileInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(claude, "fine", "SKILL.md"), skillDoc("fine", "", "# x\n"))
+	// Two copies over the 4 MB read limit that differ only past it. A cut-short
+	// read would hash them alike and call them identical.
+	padding := strings.Repeat("x", 4<<20)
+	writeFile(t, filepath.Join(claude, "big", "SKILL.md"), skillDoc("big", "", padding+"\nNever do A.\n"))
+	writeFile(t, filepath.Join(home, ".codex", "skills", "big", "SKILL.md"), skillDoc("big", "", padding+"\nAlways do A.\n"))
 
 	want := map[string]string{
-		"slotlink": "unknown/none//NO-SIGNAL",
-		"nothub":   "unknown/none//NO-SIGNAL",
-		"hub":      "yours/git/Me/repo/NO-SIGNAL",
-		"piped":    "unknown/none//NO-SIGNAL",
-		"locked":   "unknown/none//UNREADABLE",
-		"fine":     "unknown/none//NO-SIGNAL",
+		"big@.claude": "unknown/none//UNREADABLE",
+		"big@.codex":  "unknown/none//UNREADABLE",
+		"slotlink":    "unknown/none//NO-SIGNAL",
+		"nothub":      "unknown/none//NO-SIGNAL",
+		"hub":         "yours/git/Me/repo/NO-SIGNAL",
+		"piped":       "unknown/none//NO-SIGNAL",
+		"locked":      "unknown/none//UNREADABLE",
+		"fine":        "unknown/none//NO-SIGNAL",
 	}
 	if os.Geteuid() == 0 { // root reads through mode 000
 		want["locked"] = "unknown/none//NO-SIGNAL"
@@ -247,8 +255,13 @@ func TestScanScriptHostileInput(t *testing.T) {
 			writeFile(t, filepath.Join(home, ".agents", ".skill-lock.json"), lock)
 			got := runScan(t, home, t.TempDir(), nil, "--offline", "--owner", "me")
 			assertRows(t, got.rows(), want)
-			if os.Geteuid() != 0 && len(got.Summary.Problems) != 1 {
-				t.Errorf("problems = %v, want the one unreadable SKILL.md", got.Summary.Problems)
+			if os.Geteuid() != 0 && len(got.Summary.Problems) != 3 {
+				t.Errorf("problems = %v, want the unreadable SKILL.md and the two oversized ones", got.Summary.Problems)
+			}
+			for _, r := range got.Skills {
+				if r.Name == "big" && (r.Copies != 2 || r.CopiesIdentical) {
+					t.Errorf("big copies = %d identical=%t, want 2 that are not called identical", r.Copies, r.CopiesIdentical)
+				}
 			}
 		})
 	}
@@ -265,17 +278,24 @@ func TestScanScriptHostileInput(t *testing.T) {
 // and logs), run git only from / with the inherited GIT_* settings dropped,
 // import nothing from the working directory, and leave every tree unchanged.
 func TestScanScriptCheckIsIsolated(t *testing.T) {
+	release := make(chan struct{})
 	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/left-pad/latest":
+		switch {
+		case r.URL.Path == "/left-pad/latest":
 			fmt.Fprint(w, `{"version":"1.3.0"}`)
-		case "/good/latest":
+		case r.URL.Path == "/good/latest", manyPin.MatchString(r.URL.Path):
 			fmt.Fprint(w, `{"version":"1.0.0"}`)
+		case r.URL.Path == "/slow/latest": // never answers while the scan is waiting
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer registry.Close()
+	defer close(release)
 
 	home := t.TempDir()
 	skills := filepath.Join(home, ".claude", "skills")
@@ -284,6 +304,21 @@ func TestScanScriptCheckIsIsolated(t *testing.T) {
 	writeFile(t, filepath.Join(skills, "behind", "SKILL.md"), skillDoc("behind", "", "Use `left-pad@1.2.0`.\n"))
 	writeFile(t, filepath.Join(skills, "current", "SKILL.md"), skillDoc("current", "", "Use `good@1.0.0`.\n"))
 	writeFile(t, filepath.Join(skills, "partial", "SKILL.md"), skillDoc("partial", "", "Use `good@1.0.0` with `missing@1.0.0`.\n"))
+	writeFile(t, filepath.Join(skills, "ghost", "SKILL.md"), skillDoc("ghost", "metadata:\n  upkeep-pins: \"missing=1.0.0\"\n", "# x\n"))
+	// 31 pins, the last one behind: stopping at the limit must not read as FRESH.
+	var pins []string
+	for i := 0; i < 30; i++ {
+		pins = append(pins, fmt.Sprintf("p%d=1.0.0", i))
+	}
+	pins = append(pins, "p30=0.9.0")
+	writeFile(t, filepath.Join(skills, "manypins", "SKILL.md"),
+		skillDoc("manypins", "metadata:\n  upkeep-pins: \""+strings.Join(pins, ", ")+"\"\n", "# x\n"))
+	// A reference file that is a FIFO: reading it would block forever.
+	writeFile(t, filepath.Join(skills, "fifo", "SKILL.md"), skillDoc("fifo", "metadata:\n  upkeep-pins: \"good=1.0.0\"\n", "# x\n"))
+	if err := os.MkdirAll(filepath.Join(skills, "fifo", "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	haveFifo := exec.Command("mkfifo", filepath.Join(skills, "fifo", "references", "blocked.md")).Run() == nil
 
 	evidence := t.TempDir() // outside every digested tree
 	stubs := t.TempDir()
@@ -302,22 +337,48 @@ func TestScanScriptCheckIsIsolated(t *testing.T) {
 		"GIT_DIR=" + cwd,
 	})
 
-	assertRows(t, got.rows(), map[string]string{
-		"npmpin":  "unknown/none//STALE",
-		"ghpin":   "unknown/none//STALE",
-		"behind":  "unknown/none//GAP",
-		"current": "unknown/none//CURRENT",
-		"partial": "unknown/none//UNRESOLVED", // one package was not found: not CURRENT
-	})
-	for name, want := range map[string]string{
-		"npmpin":  "pin:left-pad pinned 1.0.0 → current 1.3.0",
-		"ghpin":   "pin:tool pinned 1.0.0 → current 1.2.0",
-		"behind":  "left-pad 1.2.0 → 1.3.0",
-		"partial": "not found: missing 1.0.0",
-	} {
+	wantRows := map[string]string{
+		"npmpin":   "unknown/none//STALE",
+		"ghpin":    "unknown/none//STALE",
+		"behind":   "unknown/none//GAP",
+		"current":  "unknown/none//CURRENT",
+		"partial":  "unknown/none//UNRESOLVED", // one package was not found: not CURRENT
+		"ghost":    "unknown/none//FRESH",      // upkeep.sh's verdict; the detail names the unresolved pin
+		"manypins": "unknown/none//UNKNOWN",
+		"fifo":     "unknown/none//UNKNOWN",
+	}
+	wantDetails := map[string]string{
+		"npmpin":   "pin:left-pad pinned 1.0.0 → current 1.3.0",
+		"ghpin":    "pin:tool pinned 1.0.0 → current 1.2.0",
+		"behind":   "left-pad 1.2.0 → 1.3.0",
+		"partial":  "not found: missing 1.0.0",
+		"ghost":    "pin:missing (pinned 1.0.0 — current unresolved)",
+		"manypins": "check stopped: more than 30 pins",
+		"fifo":     "check stopped: blocked.md: not a regular file",
+	}
+	if !haveFifo {
+		t.Log("mkfifo unavailable, the FIFO case is not exercised")
+		wantRows["fifo"], wantDetails["fifo"] = "unknown/none//FRESH", ""
+	}
+	assertRows(t, got.rows(), wantRows)
+	for name, want := range wantDetails {
 		if d := got.detail(name); d != want {
 			t.Errorf("%s detail = %q, want %q", name, d, want)
 		}
+	}
+
+	// A lookup that never answers: the deadline must end the check, and the
+	// result must say so. (A swallowed deadline would wait out the lookup and
+	// report the pin as merely unresolved.)
+	slowDir := t.TempDir()
+	writeFile(t, filepath.Join(slowDir, "slow", "SKILL.md"), skillDoc("slow", "metadata:\n  upkeep-pins: \"slow=1.0.0\"\n", "# x\n"))
+	started := time.Now()
+	slow := runScan(t, home, cwd, []string{"SKILL_SCAN_NPM_REGISTRY=" + registry.URL, "SKILL_SCAN_CHECK_SECONDS=1"}, "--only", slowDir)
+	if d := slow.detail("slow"); d != "check stopped: timed out after 1 s" || slow.rows()["slow"] != "unknown/none//UNKNOWN" {
+		t.Errorf("slow = %q, detail %q, want UNKNOWN and the timeout named", slow.rows()["slow"], d)
+	}
+	if took := time.Since(started); took > 6*time.Second {
+		t.Errorf("the 1 s deadline took %s to end the check", took)
 	}
 
 	if _, err := os.Stat(filepath.Join(evidence, "NPM_RAN")); err == nil {
@@ -339,6 +400,8 @@ func TestScanScriptCheckIsIsolated(t *testing.T) {
 		t.Errorf("the scan changed the scanned tree or the working directory:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
+
+var manyPin = regexp.MustCompile(`^/p\d+/latest$`)
 
 // treeDigest lists every file, directory and symlink under the roots with a
 // content hash (or the link target), so any write shows up as a difference.

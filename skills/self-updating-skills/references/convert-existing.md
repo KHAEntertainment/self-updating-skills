@@ -43,17 +43,17 @@ Without `--owner` nothing is marked `yours`, and a git checkout reads `unknown` 
 
 | State | Meaning |
 |---|---|
-| `FRESH`, `STALE`, `TAMPERED`, `UNKNOWN` | Already self-updating (it has `upkeep-*` keys): the verdict `upkeep.sh check` gives, with the stale pins and dates listed |
+| `FRESH`, `STALE`, `TAMPERED`, `UNKNOWN` | Already self-updating (it has `upkeep-*` keys): the verdict `upkeep.sh check` gives, with the stale pins and dates listed. A pin that could not be resolved is listed too: `FRESH` with one is not proven. `UNKNOWN` with "check stopped" means the scan gave up on that skill (time limit, more than 30 pins, or a file it refuses to read) |
 | `GAP` | Not self-updating, and a package version named in `SKILL.md` is behind the latest npm or PyPI release |
 | `CURRENT` | Not self-updating; every package it names was found, and each version is the latest |
 | `UNRESOLVED` | No gap found, but at least one named package was not found in a registry |
 | `NO-SIGNAL` | Names no `package@version`. Either a taste or methodology skill, or a tool skill that never states the version it was written for |
 | `NOT-CHECKED` | `--offline` was passed |
-| `UNREADABLE` | Its `SKILL.md` could not be read. The rest of the report still stands |
+| `UNREADABLE` | Its `SKILL.md` could not be read, is not a regular file, or is over 4 MB (a file is never read in part). The rest of the report still stands |
 
 The version test is deliberately narrow (`name@1.2.3`, `"name": "^1.2.3"`, `name==1.2.3`, in `SKILL.md` only), so `GAP` is strong evidence and `NO-SIGNAL` is none. Most tool skills read `NO-SIGNAL`. Step 4 decides.
 
-`COPIES` shows how many different folders share a name: `3=` means three folders with an identical `SKILL.md`, `2≠` means two that differ. Settle which copy is the real one before converting any of them. Above the table the scan lists broken links (those directly inside a scanned folder) and anything it could not read.
+`COPIES` shows how many different folders share a name: `3=` means three folders with an identical `SKILL.md`, `2≠` means two that differ, `2?` means one of them could not be read. Settle which copy is the real one before converting any of them. Above the table the scan lists broken links (those directly inside a scanned folder) and anything it could not read.
 
 ## Step 4: Classify and Get Approval
 
