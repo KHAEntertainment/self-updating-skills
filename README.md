@@ -76,6 +76,35 @@ npx skills add KHAEntertainment/self-updating-skills --skill opencode-authoring
 ./bin/upkeep.sh sync skills/*
 ```
 
+## Convert Existing Skills
+
+The `self-updating-skills` skill also converts skills you already have. It starts with a read-only scan of every skill folder on the machine (`~/.agents`, `~/.claude`, `~/.codex`, OpenCode, Gemini, Cursor, OpenClaw):
+
+```bash
+./skills/self-updating-skills/scripts/scan.sh --owner <your-github-login>
+```
+
+Example output, shortened:
+
+```text
+roots: 8   entries: 308   skill folders: 125   names: 86   duplicated names: 26   self-updating: 22
+
+NAME                     ORIGIN     STATE      COPIES  SOURCE / DETAIL
+threejs-webgl            unknown    STALE      1       pin:three pinned 0.186.1 → current 0.187.0
+vscode-cursor-extension  unknown    GAP        1       typescript 5.3.0 → 7.0.2
+lefthook                 unknown    NO-SIGNAL  2=
+design-taste-frontend    installed  NO-SIGNAL  1       Leonxlnx/taste-skill
+```
+
+The scan resolves symlinks (one row per real folder), flags names with more than one copy, reads the install record to tell your skills from installed ones, and reports which skills are stale or behind the latest release. It writes nothing.
+
+From there the skill's agent classifies each skill (tool wrapper, methodology, or pure taste), you approve the list, and it converts one skill at a time. Two things to expect:
+
+- A newly converted skill usually reads `STALE`. The pin records the version the skill was written for; refreshing the content is a separate pass.
+- Skills installed from someone else are reported, not converted. A reinstall would overwrite the change.
+
+The full workflow is in [`references/convert-existing.md`](skills/self-updating-skills/references/convert-existing.md).
+
 ## Repository Status
 
 The skills and `upkeep.sh` are the product. The Go code under `cmd/`, `engine/` and `internal/` is a parked experiment (a deterministic updater); no skill needs it, and it has no published release.
