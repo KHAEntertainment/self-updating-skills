@@ -1,8 +1,8 @@
 ---
 name: self-updating-skills
-description: Design, scaffold, retrofit, stamp, and audit self-updating Agent Skills (SKILL.md) that stay accurate when upstream CLIs, libraries, APIs, or coding harnesses ship breaking changes. Use when creating a new skill for a moving target, retrofitting an existing skill with version pins or freshness checks, protecting owner taste/policy with SHA-256 frozen blocks, or running upkeep.sh check/fetch/stamp/sync across a skill library.
+description: Design, scaffold, retrofit, stamp, and audit self-updating Agent Skills (SKILL.md) that stay accurate when upstream CLIs, libraries, APIs, or coding harnesses ship breaking changes. Use when creating a new skill for a moving target, retrofitting an existing skill with version pins or freshness checks, protecting owner taste/policy with SHA-256 frozen blocks, taking inventory of the skills installed on a machine and converting the ones that should be self-updating, or running upkeep.sh check/fetch/stamp/sync across a skill library.
 license: MIT
-allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/upkeep.sh *)
+allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/upkeep.sh *) Bash(${CLAUDE_SKILL_DIR}/scripts/scan.sh *)
 metadata:
   author: KHAEntertainment
   version: "0.1.0"
@@ -78,7 +78,22 @@ grep -n '^##' "$doc"
    <target-skill-dir>/scripts/upkeep.sh check --strict
    ```
 
+## Converting a Library of Skills
+
+For more than one existing skill, start with the read-only scan. It finds every skill on the machine, says where each came from, and says which are stale:
+
+```bash
+"${CLAUDE_SKILL_DIR}/scripts/scan.sh" --owner <github-login>     # add --json for paths and details
+```
+
+Then follow [`references/convert-existing.md`](references/convert-existing.md): classify each skill, **get the owner's approval of the list**, convert one skill at a time with the 4 steps above, and report. Three rules hold throughout:
+
+- The scan never writes. Nothing is modified before the owner approves the list.
+- Converting does not make a skill current. Pin the version the skill was written for; a newly converted skill usually reads `STALE`, and refreshing its content is a separate pass.
+- Skills installed from someone else are report-only. A reinstall overwrites local edits.
+
 ## Reference Files
 
 - [`references/three-layer-model.md`](references/three-layer-model.md) — Classification matrix (Documentation-faithful vs. Opinionated vs. Hybrid), maintenance agent edit boundaries, and redirect-table design.
 - [`references/frontmatter-spec.md`](references/frontmatter-spec.md) — Complete `upkeep-*` frontmatter schema, pin syntax (`npm`, `github` tag, `github` SHA, `manual`), and cross-harness injection templates.
+- [`references/convert-existing.md`](references/convert-existing.md) — The find, triage, scan, classify, convert and report workflow for a library of existing skills; `scan.sh` states and the report format.
