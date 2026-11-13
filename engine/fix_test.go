@@ -238,7 +238,7 @@ func TestMalformedSidecarRefusesMutations(t *testing.T) {
 	}
 
 	// The committed retrofit sidecar still loads.
-	if _, err := render.LoadSidecar(filepath.Join(root, "skills", "claude-code-authoring")); err != nil {
+	if _, err := render.LoadSidecar(filepath.Join(root, "testdata", "proof", "claude-code-authoring")); err != nil {
 		t.Errorf("committed retrofit sidecar must load: %v", err)
 	}
 }

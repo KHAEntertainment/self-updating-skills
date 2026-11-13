@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "owner": "ci",
+  "pins": {
+    "@anthropic-ai/claude-code": {
+      "kind": "npm",
+      "verified_for": "2.1.317",
+      "latest_seen": "2.1.317",
+      "checked_at": "2026-11-03",
+      "verified_at": "2026-11-03"
+    }
+  },
+  "docs": {
+    "commands": {
+      "verified_sha": "sha256:051898624506138e5c5a807aadcfd2776c9dfaae522cf1f3def2bd5985b74c22",
+      "latest_sha": "sha256:051898624506138e5c5a807aadcfd2776c9dfaae522cf1f3def2bd5985b74c22",
+      "verified_at": "2026-11-03"
+    },
+    "hooks": {
+      "verified_sha": "sha256:524960c086d43f6e23950bf9d98f513259e2b6fbfd88b38622a5d020698fbc6e",
+      "latest_sha": "sha256:524960c086d43f6e23950bf9d98f513259e2b6fbfd88b38622a5d020698fbc6e",
+      "verified_at": "2026-11-03"
+    },
+    "hooks-guide": {
+      "verified_sha": "sha256:22d4e4c5e593dd4d14f78f785691e9917d4eee811308c7197fa3aa8a18664fc4",
+      "latest_sha": "sha256:22d4e4c5e593dd4d14f78f785691e9917d4eee811308c7197fa3aa8a18664fc4",
+      "verified_at": "2026-11-03"
+    },
+    "mcp": {
+      "verified_sha": "sha256:4b3c2237229b454601119d2fd5d44228089ec3436b78edb395d357fc2bfe44d1",
+      "latest_sha": "sha256:4b3c2237229b454601119d2fd5d44228089ec3436b78edb395d357fc2bfe44d1",
+      "verified_at": "2026-11-03"
+    },
+    "memory": {
+      "verified_sha": "sha256:24b2a7235ba423a8a6994b6da1fc7ce33223bb03ab1b1c7c6b3f84eb1df7a5a2",
+      "latest_sha": "sha256:24b2a7235ba423a8a6994b6da1fc7ce33223bb03ab1b1c7c6b3f84eb1df7a5a2",
+      "verified_at": "2026-11-03"
+    },
+    "output-styles": {
+      "verified_sha": "sha256:74bc7dfd0e61dc4a2cd5ffaca349f40702b49c33f9fba7cb4334b1d623a1bda1",
+      "latest_sha": "sha256:74bc7dfd0e61dc4a2cd5ffaca349f40702b49c33f9fba7cb4334b1d623a1bda1",
+      "verified_at": "2026-11-03"
+    },
+    "permission-modes": {
+      "verified_sha": "sha256:0914e337d801098dc83f9d0ddcd5946ba01b25f4e8027e0dbbb70509312d77cb",
+      "latest_sha": "sha256:0914e337d801098dc83f9d0ddcd5946ba01b25f4e8027e0dbbb70509312d77cb",
+      "verified_at": "2026-11-03"
+    },
+    "permissions": {
+      "verified_sha": "sha256:56ae35be29f8ddd49e0b2a0e83bbeccc333a0766ca48fb6dc469501e190f27cb",
+      "latest_sha": "sha256:56ae35be29f8ddd49e0b2a0e83bbeccc333a0766ca48fb6dc469501e190f27cb",
+      "verified_at": "2026-11-03"
+    },
+    "plugin-dependencies": {
+      "verified_sha": "sha256:ffaa4bddfb56826e57ae437a438611ce0ef992abc12da8959590123cbff95051",
+      "latest_sha": "sha256:ffaa4bddfb56826e57ae437a438611ce0ef992abc12da8959590123cbff95051",
+      "verified_at": "2026-11-03"
+    },
+    "plugin-evals": {
+      "verified_sha": "sha256:4505c07df2227cb7dd608b5a3e82ec4a76c61e6904889c73326ac1a1d5bc84aa",
+      "latest_sha": "sha256:4505c07df2227cb7dd608b5a3e82ec4a76c61e6904889c73326ac1a1d5bc84aa",
+      "verified_at": "2026-11-03"
+    },
+    "plugin-marketplaces": {
+      "verified_sha": "sha256:09ca4f45324f12bfae726823b14c7b3c5bdd8f31261afe74c93691d2d21b4e1c",
+      "latest_sha": "sha256:09ca4f45324f12bfae726823b14c7b3c5bdd8f31261afe74c93691d2d21b4e1c",
+      "verified_at": "2026-11-03"
+    },
+    "plugins": {
+      "verified_sha": "sha256:9124d73faba1ae251d9f4229d03e19bd9fc0cd811a43aefc014c75a9d34e64ad",
+      "latest_sha": "sha256:9124d73faba1ae251d9f4229d03e19bd9fc0cd811a43aefc014c75a9d34e64ad",
+      "verified_at": "2026-11-03"
+    },
+    "plugins-reference": {
+      "verified_sha": "sha256:a10a371d18d571e769f99720d4402f3ec13ceb668561266f57145cfa940fa4ed",
+      "latest_sha": "sha256:a10a371d18d571e769f99720d4402f3ec13ceb668561266f57145cfa940fa4ed",
+      "verified_at": "2026-11-03"
+    },
+    "settings": {
+      "verified_sha": "sha256:11ee1657254c1a5cafc20594056240cbb44172cf67a11ac0a72111bcccadfa87",
+      "latest_sha": "sha256:11ee1657254c1a5cafc20594056240cbb44172cf67a11ac0a72111bcccadfa87",
+      "verified_at": "2026-11-03"
+    },
+    "settings-reference": {
+      "verified_sha": "sha256:756701b303d66cf16d8132ee306de95e621cfff72e9ada76061c2a65c20d2a1e",
+      "latest_sha": "sha256:756701b303d66cf16d8132ee306de95e621cfff72e9ada76061c2a65c20d2a1e",
+      "verified_at": "2026-11-03"
+    },
+    "skills": {
+      "verified_sha": "sha256:d2a5d07c0d1cef1d1edcf30f38f6b2712ff70ac050e3d50601cd3dadb42f9097",
+      "latest_sha": "sha256:d2a5d07c0d1cef1d1edcf30f38f6b2712ff70ac050e3d50601cd3dadb42f9097",
+      "verified_at": "2026-11-03"
+    },
+    "sub-agents": {
+      "verified_sha": "sha256:171391cec830f18874b1fd9b9125a4712ca10d6e34afdb53e2f0f8b2f643c392",
+      "latest_sha": "sha256:171391cec830f18874b1fd9b9125a4712ca10d6e34afdb53e2f0f8b2f643c392",
+      "verified_at": "2026-11-03"
+    }
+  }
+}
