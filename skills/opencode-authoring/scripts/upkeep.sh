@@ -18,8 +18,11 @@ DEFAULT_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # A vendored copy that delegates to the canonical script (see "Optional
 # delegation" below) passes its own skill dir along. Without it the canonical
 # copy would default to its own parent, ~/.agents/upkeep, and `fetch` or a
-# bare `check` would look for a SKILL.md there. Only a delegated call (which
-# always sets UPKEEP_NO_DELEGATE) is trusted to carry it.
+# bare `check` would look for a SKILL.md there. UPKEEP_SKILL_DIR is honoured
+# only together with UPKEEP_NO_DELEGATE, which every delegated call sets, so
+# the variable alone never redirects a run. The pair is reserved for that
+# hand-off: with both set by hand, any copy of this script takes the named
+# dir as its default (an explicit skill-dir argument still wins).
 if [[ -n "${UPKEEP_NO_DELEGATE:-}" && -n "${UPKEEP_SKILL_DIR:-}" ]]; then
   DEFAULT_SKILL_DIR="$UPKEEP_SKILL_DIR"
 fi
