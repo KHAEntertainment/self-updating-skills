@@ -4,7 +4,9 @@ Verified against https://code.claude.com/docs/en/plugins-reference.md and
 plugin-evals.md on 2026-11-03. The "Plugin options" section was verified on
 2026-11-11 against plugins-reference, settings-reference, hooks, mcp and
 plugins/mods/reference, plus
-Claude Code 2.1.322. Live page wins on any conflict.
+Claude Code 2.1.322. The `configure` syntax and the sanitized example were
+re-verified on 2026-11-13 against the plugins CLI reference and Claude Code
+2.1.323. Live page wins on any conflict.
 
 ## Layout (auto-discovered)
 
@@ -97,8 +99,8 @@ first; it is short.
 - **UI and CLI:** prompted when the plugin is enabled; `/plugin` > Installed >
   plugin > **Configure options** (see the `discover-plugins` page); `/config`
   rows for non-sensitive, non-`multiple` options (v2.1.269+). Shell:
-  `claude plugin configure <plugin> [--json]` shows options and which are
-  unset; `--values-stdin` saves a JSON object of single-line strings, and
+  `claude plugin configure <plugin>@<marketplace> [--json]` shows options and
+  which are unset; `--values-stdin` saves a JSON object of single-line strings, and
   omitted options keep their values (v2.1.285+, in `--help` but not on the
   `cli-reference` page when checked). Closing `/plugin` with pending changes
   runs `/reload-plugins`; the `unifi-mcp` plugin reports that an open session
@@ -110,10 +112,14 @@ first; it is short.
   `unifi-mcp` plugins say an empty string; treat as unverified), and whether
   a saved keychain secret can be cleared on current versions.
 
-Sanitized example (passes `claude plugin validate --strict`, 2.1.322):
+Sanitized example (passes `claude plugin validate --strict`, 2.1.323):
 
 ```json
 {
+  "name": "svc-plugin",
+  "version": "1.0.0",
+  "description": "Example service plugin",
+  "author": { "name": "Example" },
   "mcpServers": { "svc": { "command": "npx", "args": ["-y", "svc-mcp@1.0.0"],
     "env": { "SVC_HOST": "${user_config.host}", "SVC_TOKEN": "${user_config.api_token}",
              "SVC_MODE": "${user_config.mode}" } } },
@@ -139,7 +145,7 @@ claude --plugin-dir ./my-plugin                            # load for one sessio
 claude plugin eval init                                    # scaffold eval suite
 claude plugin eval ./my-plugin                             # run vs no-plugin baseline
 claude plugin install|enable|disable|update|uninstall <plugin>[@marketplace]
-claude plugin configure <plugin> [--json] [--values-stdin] # userConfig values
+claude plugin configure <plugin>@<marketplace> [--json] [--values-stdin] # userConfig values
 ```
 
 In a session, run `/reload-plugins` after changing hooks, agents, MCP or
