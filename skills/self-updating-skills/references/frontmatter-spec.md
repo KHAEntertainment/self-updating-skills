@@ -68,6 +68,8 @@ metadata:
 
 ## 5. Renderer-Owned Keys, the Sidecar and Generated Regions
 
+Optional. A skill needs none of this to be created, retrofitted, stamped or checked: `scripts/upkeep.sh` covers all of that and never reads the sidecar. The `upkeep` binary named below has no published release; it is built from this repo with `go build ./cmd/upkeep`.
+
 Once a skill has an `upkeep.data.json` sidecar (next to `SKILL.md`, tracked in git, `schema: 1`), two metadata keys stop being author-editable:
 
 - **`upkeep-pins`** becomes the *content-verified-for* pin list, rendered from the sidecar's `pins.<pkg>.verified_for` values (decision P1). The newest upstream version is tracked separately as `latest_seen` in the sidecar, so the frozen script shows `STALE` exactly where the Go engine shows `CONTENT-LAG`.
