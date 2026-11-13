@@ -15,6 +15,15 @@ set -uo pipefail
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 DEFAULT_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# A vendored copy that delegates to the canonical script (see "Optional
+# delegation" below) passes its own skill dir along. Without it the canonical
+# copy would default to its own parent, ~/.agents/upkeep, and `fetch` or a
+# bare `check` would look for a SKILL.md there. Only a delegated call (which
+# always sets UPKEEP_NO_DELEGATE) is trusted to carry it.
+if [[ -n "${UPKEEP_NO_DELEGATE:-}" && -n "${UPKEEP_SKILL_DIR:-}" ]]; then
+  DEFAULT_SKILL_DIR="$UPKEEP_SKILL_DIR"
+fi
+
 # Debug mode: `--debug` is recognized and stripped before forwarding so it
 # never reaches the Go or Python argument parsers; `UPKEEP_DEBUG=1` is
 # honored too. Exactly one debug line goes to stderr, naming the path taken.
@@ -128,7 +137,7 @@ if [[ -z "${UPKEEP_NO_DELEGATE:-}" && -x "$HOME/.agents/upkeep/bin/upkeep.sh" &&
     if [[ "$DEBUG_MODE" -eq 1 ]]; then
       echo "UPKEEP-DEBUG: script path (delegate): $HOME/.agents/upkeep/bin/upkeep.sh ($global_ver)" >&2
     fi
-    UPKEEP_NO_DELEGATE=1 exec "$HOME/.agents/upkeep/bin/upkeep.sh" "$@"
+    UPKEEP_NO_DELEGATE=1 UPKEEP_SKILL_DIR="$DEFAULT_SKILL_DIR" exec "$HOME/.agents/upkeep/bin/upkeep.sh" "$@"
   fi
 fi
 

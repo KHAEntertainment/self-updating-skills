@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -144,6 +145,98 @@ fi
 	if strings.Contains(string(out), "GO-GOT:") {
 		t.Errorf("sync reached the Go binary:\n%s", out)
 	}
+}
+
+// TestUpkeepWrapperDelegationKeepsSkillDir covers Issue #12: when a vendored
+// script hands off to a canonical ~/.agents/upkeep/bin/upkeep.sh of a
+// different lib version, the canonical copy must work on the caller's skill
+// dir, not on its own parent (~/.agents/upkeep). `fetch` and a bare `check`
+// take no directory argument, so both depend on it.
+func TestUpkeepWrapperDelegationKeepsSkillDir(t *testing.T) {
+	root := repoRoot(t)
+
+	// A stub `upkeep` below 0.3.0 keeps `check` off the Go hand-off, whatever
+	// is installed on the machine running the test.
+	stubDir := t.TempDir()
+	writeExecutable(t, filepath.Join(stubDir, "upkeep"), "#!/usr/bin/env bash\necho \"upkeep 0.1.0\"\n")
+
+	script, err := os.ReadFile(filepath.Join(root, "bin", "upkeep.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	libLine := regexp.MustCompile(`(?m)^# skill-upkeep-lib: \S+`)
+	canonical := libLine.ReplaceAllString(string(script), "# skill-upkeep-lib: v99.0.0")
+	if canonical == string(script) {
+		t.Fatal("no skill-upkeep-lib line found in bin/upkeep.sh")
+	}
+
+	// homeWithCanonical holds a canonical script of a different version, so
+	// the vendored copy delegates. homeBare holds none.
+	homeWithCanonical := t.TempDir()
+	canonDir := filepath.Join(homeWithCanonical, ".agents", "upkeep", "bin")
+	if err := os.MkdirAll(canonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(canonDir, "upkeep.sh"), canonical)
+	homeBare := t.TempDir()
+
+	skillDir := filepath.Join(t.TempDir(), "skills", "x")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDoc := "---\nname: x\nmetadata:\n  upkeep-source-base: \"https://example.invalid/docs\"\n  upkeep-source-pages: \"alpha, beta\"\n---\n\n# X\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillDoc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vendored := filepath.Join(skillDir, "scripts", "upkeep.sh")
+	copyFile(t, filepath.Join(root, "bin", "upkeep.sh"), vendored)
+
+	tmp := t.TempDir()
+	run := func(home string, extraEnv []string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(vendored, args...)
+		cmd.Dir = t.TempDir() // unrelated cwd
+		cmd.Env = append(os.Environ(),
+			"HOME="+home,
+			"TMPDIR="+tmp,
+			"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		)
+		cmd.Env = append(cmd.Env, extraEnv...)
+		out, _ := cmd.CombinedOutput() // check exits 0; fetch --list exits 0
+		return string(out)
+	}
+
+	t.Run("delegated-fetch", func(t *testing.T) {
+		out := run(homeWithCanonical, nil, "fetch", "--list", "--debug")
+		if !strings.Contains(out, "(delegate)") {
+			t.Fatalf("expected the hand-off to the canonical script:\n%s", out)
+		}
+		if strings.Contains(out, "no SKILL.md") || !strings.Contains(out, "alpha") || !strings.Contains(out, "beta") {
+			t.Errorf("delegated fetch did not resolve the caller's skill dir:\n%s", out)
+		}
+	})
+	t.Run("delegated-bare-check", func(t *testing.T) {
+		out := run(homeWithCanonical, nil, "--debug")
+		if !strings.Contains(out, "(delegate)") {
+			t.Fatalf("expected the hand-off to the canonical script:\n%s", out)
+		}
+		if strings.Contains(out, "no SKILL.md") || !strings.Contains(out, "VERDICT:") {
+			t.Errorf("delegated bare check did not resolve the caller's skill dir:\n%s", out)
+		}
+	})
+	t.Run("no-delegation-unchanged", func(t *testing.T) {
+		out := run(homeWithCanonical, []string{"UPKEEP_NO_DELEGATE=1"}, "fetch", "--list", "--debug")
+		if strings.Contains(out, "(delegate)") || !strings.Contains(out, "alpha") {
+			t.Errorf("UPKEEP_NO_DELEGATE=1 must stay on the vendored script and its own dir:\n%s", out)
+		}
+	})
+	t.Run("stray-variable-ignored", func(t *testing.T) {
+		// Outside a delegated call the variable is not trusted.
+		out := run(homeBare, []string{"UPKEEP_SKILL_DIR=" + filepath.Join(tmp, "nowhere")}, "fetch", "--list")
+		if strings.Contains(out, "no SKILL.md") || !strings.Contains(out, "alpha") {
+			t.Errorf("a stray UPKEEP_SKILL_DIR redirected the script:\n%s", out)
+		}
+	})
 }
 
 func writeExecutable(t *testing.T, path, content string) {
