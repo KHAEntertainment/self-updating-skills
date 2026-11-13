@@ -234,11 +234,14 @@ class CheckAbort(BaseException):
     catch Exception around a lookup, and would otherwise carry on past a deadline or a limit."""
 
 def checked_read_text(self, encoding=None, errors=None):
-    """Path.read_text while the check runs: every file it opens goes through read_file."""
+    """Path.read_text while the check runs: every file it opens goes through read_file. Line
+    endings are translated as the real read_text does, so a CRLF skill gets the same verdict."""
     try:
-        return read_file(self).decode(encoding or "utf-8", errors or "strict")
+        data = read_file(self)
     except OSError as e:
         raise CheckAbort(f"{self.name}: {e.strerror or e}")
+    return io.TextIOWrapper(io.BytesIO(data), encoding=encoding or "utf-8", errors=errors or "strict",
+                            newline=None).read()
 
 def tool_output(cmd, **kw):
     """Answers the two commands the check runs. `npm view` comes from the registry instead, and

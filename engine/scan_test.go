@@ -319,6 +319,39 @@ func TestScanScriptCheckIsIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	haveFifo := exec.Command("mkfifo", filepath.Join(skills, "fifo", "references", "blocked.md")).Run() == nil
+	// CRLF skills with a stamped frozen block, one of them edited after the
+	// stamp. The scan must give the verdict upkeep.sh itself gives.
+	upkeep := filepath.Join(repoRoot(t), "skills", "self-updating-skills", "scripts", "upkeep.sh")
+	runUpkeep := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(upkeep, args...)
+		cmd.Dir = t.TempDir()
+		cmd.Env = append(os.Environ(), "HOME="+home, "UPKEEP_NO_DELEGATE=1")
+		out, _ := cmd.CombinedOutput()
+		return string(out)
+	}
+	canonical := map[string]string{}
+	for name, edit := range map[string]string{"crlf-intact": "Never do A.", "crlf-tampered": "Always do A."} {
+		doc := filepath.Join(skills, name, "SKILL.md")
+		writeFile(t, doc, skillDoc(name, "metadata:\n  author: \"x\"\n", "<!-- frozen:policy -->\nNever do A.\n<!-- /frozen:policy -->\n"))
+		if out := runUpkeep("stamp", filepath.Dir(doc)); !strings.Contains(out, "STAMPED") {
+			t.Fatalf("stamp failed for %s:\n%s", name, out)
+		}
+		lf, err := os.ReadFile(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		crlf := strings.ReplaceAll(strings.Replace(string(lf), "Never do A.", edit, 1), "\n", "\r\n")
+		writeFile(t, doc, crlf)
+		m := verdictLine.FindStringSubmatch(runUpkeep("check", filepath.Dir(doc)))
+		if m == nil {
+			t.Fatalf("upkeep.sh check gave no verdict for %s", name)
+		}
+		canonical[name] = m[1]
+	}
+	if canonical["crlf-intact"] != "FRESH" || canonical["crlf-tampered"] != "TAMPERED" {
+		t.Fatalf("fixture is wrong: upkeep.sh says %v", canonical)
+	}
 
 	evidence := t.TempDir() // outside every digested tree
 	stubs := t.TempDir()
@@ -346,6 +379,9 @@ func TestScanScriptCheckIsIsolated(t *testing.T) {
 		"ghost":    "unknown/none//FRESH",      // upkeep.sh's verdict; the detail names the unresolved pin
 		"manypins": "unknown/none//UNKNOWN",
 		"fifo":     "unknown/none//UNKNOWN",
+	}
+	for name, verdict := range canonical {
+		wantRows[name] = "unknown/none//" + verdict
 	}
 	wantDetails := map[string]string{
 		"npmpin":   "pin:left-pad pinned 1.0.0 → current 1.3.0",
@@ -401,7 +437,10 @@ func TestScanScriptCheckIsIsolated(t *testing.T) {
 	}
 }
 
-var manyPin = regexp.MustCompile(`^/p\d+/latest$`)
+var (
+	manyPin     = regexp.MustCompile(`^/p\d+/latest$`)
+	verdictLine = regexp.MustCompile(`(?m)^VERDICT: (\w+)`)
+)
 
 // treeDigest lists every file, directory and symlink under the roots with a
 // content hash (or the link target), so any write shows up as a difference.
