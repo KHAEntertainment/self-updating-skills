@@ -68,7 +68,7 @@ metadata:
 
 ## 5. Renderer-Owned Keys, the Sidecar and Generated Regions
 
-Optional. A skill needs none of this to be created, retrofitted, stamped or checked: `scripts/upkeep.sh` covers all of that and never reads the sidecar. The `upkeep` binary named below has no published release; it is built from this repo with `go build ./cmd/upkeep`.
+Optional. A skill needs none of this to be created, retrofitted, stamped or checked: `scripts/upkeep.sh` covers all of that and never reads the sidecar. The `upkeep` binary named below has no published release. Build it from this repo with `go build -o upkeep ./cmd/upkeep` and run it by its path (`./upkeep render <skill-dir>`); the commands below assume it is on `PATH`. Once it is on `PATH`, `scripts/upkeep.sh check` hands off to it unless `UPKEEP_NO_DELEGATE=1` is set.
 
 Once a skill has an `upkeep.data.json` sidecar (next to `SKILL.md`, tracked in git, `schema: 1`), two metadata keys stop being author-editable:
 
