@@ -13,7 +13,7 @@ How to take the skills already on a machine and make the right ones self-updatin
 
 ## Three Rules
 
-1. **Steps 1 to 3 never write.** `scan.sh` creates no file and edits none, and it never runs a script from a scanned skill. It is safe on any machine.
+1. **Steps 1 to 3 never write.** `scan.sh` creates no file and edits none. It treats every scanned folder as hostile input: it runs no script from one, imports nothing from one, and never runs git inside one. It does not run the npm CLI either, which would write a cache and logs. It is safe on any machine.
 2. **Converting does not make a skill current.** The pin records the version the skill was *written for*. A newly converted skill usually reads `VERDICT: STALE`, and that is the correct answer. Bringing the content up to date is a separate pass under the maintenance policy in [`three-layer-model.md`](three-layer-model.md).
 3. **Installed skills are report-only.** A reinstall or a plugin update overwrites local edits, so a conversion made in place does not last. Convert an installed skill only on the owner's explicit yes for that skill.
 
@@ -33,25 +33,27 @@ It walks `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.config/o
 | Evidence | Origin |
 |---|---|
 | The folder is inside `~/.claude/plugins/` | `installed` (a plugin update replaces it) |
-| `~/.agents/.skill-lock.json` has a record for it, or it sits in a git checkout with an `origin` remote | `yours` when the source owner matches an `--owner`; otherwise `installed` |
+| The folder sits in `~/.agents/skills` and `~/.agents/.skill-lock.json` has a record for it | `yours` when the record's GitHub owner matches an `--owner`; otherwise `installed` |
+| The folder is in a git checkout whose `origin` is on github.com | `yours` when that owner matches an `--owner`; otherwise `installed` |
 | No record | `unknown` |
 
-Without `--owner` nothing is marked `yours`, and a git checkout reads `unknown` because the scan cannot tell whose it is. Ask the owner about every `unknown` skill before treating it as theirs.
+Without `--owner` nothing is marked `yours`, and a git checkout reads `unknown` because the scan cannot tell whose it is. A record never applies to a folder reached through a link from `~/.agents/skills`, and an `origin` on any other host proves nothing: both read `unknown`. Ask the owner about every `unknown` skill before treating it as theirs.
 
 **Scan** (the `STATE` column):
 
 | State | Meaning |
 |---|---|
-| `FRESH`, `STALE`, `TAMPERED`, `UNKNOWN` | Already self-updating: the verdict of `upkeep.sh check`, with the stale pins and dates listed |
+| `FRESH`, `STALE`, `TAMPERED`, `UNKNOWN` | Already self-updating (it has `upkeep-*` keys): the verdict `upkeep.sh check` gives, with the stale pins and dates listed |
 | `GAP` | Not self-updating, and a package version named in `SKILL.md` is behind the latest npm or PyPI release |
-| `CURRENT` | Not self-updating; the versions it names are the latest |
-| `UNRESOLVED` | Names a version, but the package was not found in a registry |
+| `CURRENT` | Not self-updating; every package it names was found, and each version is the latest |
+| `UNRESOLVED` | No gap found, but at least one named package was not found in a registry |
 | `NO-SIGNAL` | Names no `package@version`. Either a taste or methodology skill, or a tool skill that never states the version it was written for |
 | `NOT-CHECKED` | `--offline` was passed |
+| `UNREADABLE` | Its `SKILL.md` could not be read. The rest of the report still stands |
 
 The version test is deliberately narrow (`name@1.2.3`, `"name": "^1.2.3"`, `name==1.2.3`, in `SKILL.md` only), so `GAP` is strong evidence and `NO-SIGNAL` is none. Most tool skills read `NO-SIGNAL`. Step 4 decides.
 
-`COPIES` shows how many different folders share a name: `3=` means three folders with an identical `SKILL.md`, `2≠` means two that differ. Settle which copy is the real one before converting any of them. Broken links are listed above the table.
+`COPIES` shows how many different folders share a name: `3=` means three folders with an identical `SKILL.md`, `2≠` means two that differ. Settle which copy is the real one before converting any of them. Above the table the scan lists broken links (those directly inside a scanned folder) and anything it could not read.
 
 ## Step 4: Classify and Get Approval
 

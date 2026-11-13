@@ -96,7 +96,7 @@ lefthook                 unknown    NO-SIGNAL  2=
 design-taste-frontend    installed  NO-SIGNAL  1       Leonxlnx/taste-skill
 ```
 
-The scan resolves symlinks (one row per real folder), flags names with more than one copy, reads the install record to tell your skills from installed ones, and reports which skills are stale or behind the latest release. It writes nothing.
+The scan resolves symlinks (one row per real folder), flags names with more than one copy, reads the install record to tell your skills from installed ones, and reports which skills are stale or behind the latest release. It writes nothing, and it runs nothing from the folders it scans.
 
 From there the skill's agent classifies each skill (tool wrapper, methodology, or pure taste), you approve the list, and it converts one skill at a time. Two things to expect:
 
