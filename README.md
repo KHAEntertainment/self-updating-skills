@@ -76,6 +76,10 @@ npx skills add KHAEntertainment/self-updating-skills --skill opencode-authoring
 ./bin/upkeep.sh sync skills/*
 ```
 
+## Repository Status
+
+The skills and `upkeep.sh` are the product. The Go code under `cmd/`, `engine/` and `internal/` is a parked experiment (a deterministic updater); no skill needs it, and it has no published release.
+
 ## License
 
 MIT
