@@ -373,9 +373,12 @@ POST_WORDS = {"post", "rev", "r"}
 def ver_parts(v: str):
     # Each part is (class, number, word): 0 pre-release word, 1 end of version,
     # 2 number, 3 post-release word, 4 other word. The end marker makes
-    # 1.0.0rc1 < 1.0.0 < 1.0.0.post1 while keeping 1.2 < 1.2.0.
+    # 1.0.0rc1 < 1.0.0 < 1.0.0.post1 while keeping 1.2 < 1.2.0. Only the first
+    # word is a pre/post marker; later words are identifiers inside it, so
+    # alpha < alpha.1 < alpha.beta as SemVer requires.
     v = re.sub(r'^v', '', v.strip().lower())
     out = []
+    seen_word = False
     for tok in re.split(r'[._-]+', v):
         if tok == "":
             out.append((4, 0, ""))
@@ -383,12 +386,16 @@ def ver_parts(v: str):
         for p in re.findall(r'[0-9]+|[^0-9]+', tok):
             if p[0] in "0123456789":
                 out.append((2, int(p), ""))
-            elif p in PRE_RANK:
-                out.append((0, PRE_RANK[p], ""))
-            elif p in POST_WORDS:
-                out.append((3, 0, p))
-            else:
+            elif seen_word:
                 out.append((4, 0, p))
+            else:
+                seen_word = True
+                if p in PRE_RANK:
+                    out.append((0, PRE_RANK[p], ""))
+                elif p in POST_WORDS:
+                    out.append((3, 0, ""))
+                else:
+                    out.append((4, 0, p))
     out.append((1, 0, ""))
     return out
 

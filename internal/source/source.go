@@ -136,7 +136,9 @@ type verPart struct {
 // numbers compared numerically, a pre-release word (dev, a, b, rc) below the
 // release it precedes, a post-release word (post, rev, r) above it, any
 // other word above every number, and a shorter equal prefix first
-// (1.0.0rc1 < 1.0.0 < 1.0.0.post1; 1.2 < 1.2.0).
+// (1.0.0rc1 < 1.0.0 < 1.0.0.post1; 1.2 < 1.2.0). Only the first word is a
+// pre/post marker; later words are identifiers inside it, so
+// alpha < alpha.1 < alpha.beta as SemVer requires.
 func VerCmp(a, b string) int {
 	pa := verParts(a)
 	pb := verParts(b)
@@ -173,7 +175,7 @@ func cmpPart(x, y verPart) int {
 			return c
 		}
 		return strings.Compare(x.num, y.num)
-	case partPost, partOther:
+	case partOther:
 		return strings.Compare(x.s, y.s)
 	}
 	return 0
@@ -193,24 +195,28 @@ func verParts(v string) []verPart {
 	v = strings.ToLower(strings.TrimSpace(v))
 	v = strings.TrimPrefix(v, "v")
 	var out []verPart
+	seenWord := false
 	for _, tok := range verSplitRe.Split(v, -1) {
 		if tok == "" {
 			out = append(out, verPart{class: partOther})
 			continue
 		}
 		for _, p := range verRunRe.FindAllString(tok, -1) {
-			switch {
-			case p[0] >= '0' && p[0] <= '9':
-				num := strings.TrimLeft(p, "0")
-				out = append(out, verPart{class: partNum, num: num})
-			case postWords[p]:
-				out = append(out, verPart{class: partPost, s: p})
-			default:
-				if r, ok := preRank[p]; ok {
-					out = append(out, verPart{class: partPre, rank: r})
-				} else {
-					out = append(out, verPart{class: partOther, s: p})
-				}
+			if p[0] >= '0' && p[0] <= '9' {
+				out = append(out, verPart{class: partNum, num: strings.TrimLeft(p, "0")})
+				continue
+			}
+			if seenWord {
+				out = append(out, verPart{class: partOther, s: p})
+				continue
+			}
+			seenWord = true
+			if r, ok := preRank[p]; ok {
+				out = append(out, verPart{class: partPre, rank: r})
+			} else if postWords[p] {
+				out = append(out, verPart{class: partPost})
+			} else {
+				out = append(out, verPart{class: partOther, s: p})
 			}
 		}
 	}

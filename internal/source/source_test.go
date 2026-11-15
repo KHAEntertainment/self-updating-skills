@@ -33,6 +33,17 @@ func TestVerCmp(t *testing.T) {
 		{"0.3.4.post1", "0.3.5", -1},
 		{"0.3.4.post1", "0.3.4.post2", -1},
 		{"1.0.0-hotfix", "1.0.0", 1},
+		// Only the first word is a marker; SemVer identifiers after it.
+		{"1.0.0-alpha", "1.0.0-alpha.1", -1},
+		{"1.0.0-alpha.1", "1.0.0-alpha.beta", -1},
+		{"1.0.0-alpha.beta", "1.0.0-beta", -1},
+		{"1.0.0-beta.2", "1.0.0-beta.11", -1},
+		{"1.0.0-rc.1", "1.0.0", -1},
+		{"1.0.0a1", "1.0.0a1.post1", -1},
+		{"1.0.0a1.post1", "1.0.0", -1},
+		// Post-release spellings are synonyms.
+		{"1.0.0.post1", "1.0.0.r1", 0},
+		{"1.0.0.post2", "1.0.0.rev1", 1},
 		{"1.2.3", "v1.2.03", 0},
 		{"1.99999999999999999999", "1.99999999999999999998", 1},
 	}

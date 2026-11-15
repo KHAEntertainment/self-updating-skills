@@ -89,6 +89,10 @@ case "$url" in
     echo "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee refs/tags/v1.0.0rc1"
     echo "ffffffffffffffffffffffffffffffffffffffff refs/tags/v1.0.0rc2"
     exit 0;;
+  *gh-semid*)
+    echo "1212121212121212121212121212121212121212 refs/tags/v1.0.0-alpha.1"
+    echo "3434343434343434343434343434343434343434 refs/tags/v1.0.0-alpha.beta"
+    exit 0;;
   *gh-unres*) exit 7;;
   *) exit 2;;
 esac
@@ -211,6 +215,9 @@ func conformanceCases() []conformanceCase {
 		{"github-post-release-pinned", "github-post-release-pinned", "FRESH", false, "FRESH    pin:gh-post  0.3.4.post1"},
 		// A release candidate pin is older than the final release.
 		{"github-rc-to-final", "github-rc-to-final", "STALE", true, "STALE    pin:gh-final  pinned 1.0.0rc1 → current 1.0.0"},
+		// Inside a SemVer pre-release, later words are identifiers, not new
+		// markers: alpha.1 < alpha.beta.
+		{"github-semver-prerelease-ids", "github-semver-prerelease-ids", "STALE", true, "STALE    pin:gh-semid  pinned 1.0.0-alpha.1 → current 1.0.0-alpha.beta"},
 		{"unresolved-pin", "unresolved-pin", "FRESH", false, ""},
 		{"tampered", "tampered", "TAMPERED", true, ""},
 		{"unstamped", "unstamped", "TAMPERED", true, ""},
