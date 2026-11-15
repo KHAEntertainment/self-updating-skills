@@ -23,10 +23,11 @@ import (
 const lookupTimeout = 15 * time.Second
 
 var (
-	shaPinRe    = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
-	semverTagRe = regexp.MustCompile(`^v?\d+\.\d+`)
-	leadingVRe  = regexp.MustCompile(`^v`)
-	verSplitRe  = regexp.MustCompile(`[._-]+`)
+	shaPinRe     = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+	semverTagRe  = regexp.MustCompile(`^v?\d+\.\d+`)
+	releaseTagRe = regexp.MustCompile(`^v?\d+(?:\.\d+)+$`)
+	leadingVRe   = regexp.MustCompile(`^v`)
+	verSplitRe   = regexp.MustCompile(`[._-]+`)
 )
 
 // ResolveCurrent returns the current upstream version for a pin, or ""
@@ -81,7 +82,19 @@ func ResolveCurrentE(ctx context.Context, pin skill.Pin) (string, error) {
 				semver = append(semver, t)
 			}
 		}
-		useTags := semver
+		// A pre-release or post tag (0.5.3rc2, 0.3.4.post1) has a non-numeric
+		// part, which VerCmp ranks above every number, so it would beat 0.5.23.
+		// Plain release tags decide when there are any (as in the script).
+		var release []string
+		for _, t := range semver {
+			if releaseTagRe.MatchString(t) {
+				release = append(release, t)
+			}
+		}
+		useTags := release
+		if len(useTags) == 0 {
+			useTags = semver
+		}
 		if len(useTags) == 0 {
 			useTags = tags
 		}

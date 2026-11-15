@@ -434,7 +434,11 @@ if subcmd == "check":
                     )
                     tags = [line.split("refs/tags/")[-1].strip() for line in out.splitlines() if "refs/tags/" in line]
                     semver_tags = [t for t in tags if re.match(r'^v?\d+\.\d+', t)]
-                    use_tags = semver_tags or tags
+                    # A pre-release or post tag (0.5.3rc2, 0.3.4.post1) has a non-numeric
+                    # part, which ver_parts ranks above every number, so it would beat
+                    # 0.5.23. Plain release tags decide when there are any.
+                    release_tags = [t for t in semver_tags if re.fullmatch(r'v?\d+(?:\.\d+)+', t)]
+                    use_tags = release_tags or semver_tags or tags
                     if use_tags:
                         use_tags.sort(key=ver_parts)
                         cur = re.sub(r'^v', '', use_tags[-1])

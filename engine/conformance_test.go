@@ -68,6 +68,17 @@ case "$url" in
     echo "1111111111111111111111111111111111111111 refs/tags/v1.0.0"
     echo "2222222222222222222222222222222222222222 refs/tags/v2.0.0"
     exit 0;;
+  *gh-pre*)
+    echo "3333333333333333333333333333333333333333 refs/tags/gateway-v0.3.1"
+    echo "4444444444444444444444444444444444444444 refs/tags/v0.3.4.post1"
+    echo "5555555555555555555555555555555555555555 refs/tags/v0.5.22"
+    echo "6666666666666666666666666666666666666666 refs/tags/v0.5.23"
+    echo "7777777777777777777777777777777777777777 refs/tags/v0.5.3rc2"
+    exit 0;;
+  *gh-rconly*)
+    echo "8888888888888888888888888888888888888888 refs/tags/v1.0.0rc1"
+    echo "9999999999999999999999999999999999999999 refs/tags/v1.0.0rc2"
+    exit 0;;
   *gh-unres*) exit 7;;
   *) exit 2;;
 esac
@@ -177,6 +188,12 @@ func conformanceCases() []conformanceCase {
 		// M-4: a GitHub tag pin (no sidecar) covers the tag-ordering
 		// comparison (git stub tags v1.0.0 and v2.0.0, pinned at 1.0.0).
 		{"github-tag-pin", "github-tag-pin", "STALE", true, "STALE    pin:gh-tags"},
+		// A pre-release tag (v0.5.3rc2) sorts above every plain release in
+		// the version comparison; the newest plain release (v0.5.23) must
+		// still be the current version, so a pin on it is FRESH.
+		{"github-prerelease-tags", "github-prerelease-tags", "FRESH", false, "FRESH    pin:gh-pre  0.5.23"},
+		// With no plain release at all, the pre-release tags decide.
+		{"github-only-prerelease", "github-only-prerelease", "STALE", true, "STALE    pin:gh-rconly  pinned 1.0.0rc1 → current 1.0.0rc2"},
 		{"unresolved-pin", "unresolved-pin", "FRESH", false, ""},
 		{"tampered", "tampered", "TAMPERED", true, ""},
 		{"unstamped", "unstamped", "TAMPERED", true, ""},
