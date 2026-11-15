@@ -28,6 +28,8 @@ Agent Skills (`SKILL.md`) fail in two opposite ways over time:
 | [`claude-code-authoring`](skills/claude-code-authoring/SKILL.md) | Author & review Claude Code skills, hooks, subagents, plugins, marketplaces, and settings | `@anthropic-ai/claude-code=2.1.310` | `https://code.claude.com/docs/en` (`.md` + `llms.txt` index) |
 | [`codex-authoring`](skills/codex-authoring/SKILL.md) | Author & review OpenAI Codex CLI/IDE `AGENTS.md`, `.codex/config.toml`, skills, TOML subagents, hooks, `.rules`, and permission profiles | `@openai/codex=0.164.0` | `https://learn.chatgpt.com/docs` (`.md` + `developers.openai.com/codex/llms.txt` index) |
 | [`opencode-authoring`](skills/opencode-authoring/SKILL.md) | Author & review OpenCode `opencode.json`, agents, permissions, custom tools, `@opencode-ai/plugin` hooks, commands, and skills | `opencode-ai=1.19.4` | `https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/web/src/content/docs` (`.mdx`) |
+| [`sglang-plugins`](skills/sglang-plugins/SKILL.md) | SGLang general plugin hooks (BEFORE, AFTER, AROUND, REPLACE) and HiCache L3 storage backends | `sglang=github:sgl-project/sglang@0.5.23` | `https://docs.sglang.io` (`.md` + `llms.txt` index) |
+| [`sglang-nvidia`](skills/sglang-nvidia/SKILL.md) | Install, launch and troubleshoot SGLang on NVIDIA GPUs and Jetson Orin | `sglang=github:sgl-project/sglang@0.5.23` | `https://docs.sglang.io` (`.md` + `llms.txt` index) |
 
 ---
 
