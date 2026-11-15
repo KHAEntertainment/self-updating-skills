@@ -6,4 +6,5 @@ metadata:
 ---
 # GitHub tag pin on a repository with no plain release yet
 
-Pinned at 1.0.0rc1 while the tags list has only v1.0.0rc1 and v1.0.0rc2.
+Pinned at 1.0.0rc1 while the tags list has v1.0.0rc1, v1.0.0rc2 and v１.０.０
+with full-width digits, which is not a version tag.

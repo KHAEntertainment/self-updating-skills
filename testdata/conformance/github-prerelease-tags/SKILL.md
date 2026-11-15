@@ -6,5 +6,5 @@ metadata:
 ---
 # GitHub tag pin beside pre-release and post tags
 
-Pinned at 0.5.23, the newest plain release. The tags list also has v0.5.3rc2,
-v0.3.4.post1 and gateway-v0.3.1, none of which may be taken as the current version.
+Pinned at 0.5.23, the newest release. The tags list also has v0.5.3rc2, v0.3.4.post1
+and gateway-v0.3.1, none of which may be taken as the current version.

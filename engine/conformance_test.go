@@ -78,6 +78,16 @@ case "$url" in
   *gh-rconly*)
     echo "8888888888888888888888888888888888888888 refs/tags/v1.0.0rc1"
     echo "9999999999999999999999999999999999999999 refs/tags/v1.0.0rc2"
+    echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/tags/v１.０.０"
+    exit 0;;
+  *gh-post*)
+    echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/v0.3.4"
+    echo "cccccccccccccccccccccccccccccccccccccccc refs/tags/v0.3.4.post1"
+    exit 0;;
+  *gh-final*)
+    echo "dddddddddddddddddddddddddddddddddddddddd refs/tags/v1.0.0"
+    echo "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee refs/tags/v1.0.0rc1"
+    echo "ffffffffffffffffffffffffffffffffffffffff refs/tags/v1.0.0rc2"
     exit 0;;
   *gh-unres*) exit 7;;
   *) exit 2;;
@@ -188,12 +198,19 @@ func conformanceCases() []conformanceCase {
 		// M-4: a GitHub tag pin (no sidecar) covers the tag-ordering
 		// comparison (git stub tags v1.0.0 and v2.0.0, pinned at 1.0.0).
 		{"github-tag-pin", "github-tag-pin", "STALE", true, "STALE    pin:gh-tags"},
-		// A pre-release tag (v0.5.3rc2) sorts above every plain release in
-		// the version comparison; the newest plain release (v0.5.23) must
-		// still be the current version, so a pin on it is FRESH.
+		// A pre-release tag (v0.5.3rc2) ranks below its own release, so it
+		// cannot beat v0.5.23; a pin on 0.5.23 is FRESH. The prefixed
+		// gateway-v0.3.1 tag is not a version tag and is ignored.
 		{"github-prerelease-tags", "github-prerelease-tags", "FRESH", false, "FRESH    pin:gh-pre  0.5.23"},
-		// With no plain release at all, the pre-release tags decide.
+		// With no final release, the newest pre-release is current. The
+		// full-width-digit tag v１.０.０ is not a version tag in either
+		// implementation.
 		{"github-only-prerelease", "github-only-prerelease", "STALE", true, "STALE    pin:gh-rconly  pinned 1.0.0rc1 → current 1.0.0rc2"},
+		// A post-release (v0.3.4.post1) is newer than its release.
+		{"github-post-release", "github-post-release", "STALE", true, "STALE    pin:gh-post  pinned 0.3.4 → current 0.3.4.post1"},
+		{"github-post-release-pinned", "github-post-release-pinned", "FRESH", false, "FRESH    pin:gh-post  0.3.4.post1"},
+		// A release candidate pin is older than the final release.
+		{"github-rc-to-final", "github-rc-to-final", "STALE", true, "STALE    pin:gh-final  pinned 1.0.0rc1 → current 1.0.0"},
 		{"unresolved-pin", "unresolved-pin", "FRESH", false, ""},
 		{"tampered", "tampered", "TAMPERED", true, ""},
 		{"unstamped", "unstamped", "TAMPERED", true, ""},
