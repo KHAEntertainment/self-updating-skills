@@ -364,14 +364,39 @@ def scan_frozen_blocks(skill_dir: pathlib.Path):
             blocks[fid] = (rel, body, digest)
     return blocks
 
+# Pre-release words rank below the release they precede (PEP 440 order:
+# dev < a < b < rc); post-release words rank above it. Any other word keeps
+# the old rule and ranks above every number.
+PRE_RANK = {"dev": 0, "a": 1, "alpha": 1, "b": 2, "beta": 2, "c": 3, "rc": 3, "pre": 3, "preview": 3}
+POST_WORDS = {"post", "rev", "r"}
+
 def ver_parts(v: str):
+    # Each part is (class, number, word): 0 pre-release word, 1 end of version,
+    # 2 number, 3 post-release word, 4 other word. The end marker makes
+    # 1.0.0rc1 < 1.0.0 < 1.0.0.post1 while keeping 1.2 < 1.2.0. Only the first
+    # word is a pre/post marker; later words are identifiers inside it, so
+    # alpha < alpha.1 < alpha.beta as SemVer requires.
     v = re.sub(r'^v', '', v.strip().lower())
     out = []
-    for p in re.split(r'[._-]+', v):
-        if p.isdigit():
-            out.append((0, int(p)))
-        else:
-            out.append((1, p))
+    seen_word = False
+    for tok in re.split(r'[._-]+', v):
+        if tok == "":
+            out.append((4, 0, ""))
+            continue
+        for p in re.findall(r'[0-9]+|[^0-9]+', tok):
+            if p[0] in "0123456789":
+                out.append((2, int(p), ""))
+            elif seen_word:
+                out.append((4, 0, p))
+            else:
+                seen_word = True
+                if p in PRE_RANK:
+                    out.append((0, PRE_RANK[p], ""))
+                elif p in POST_WORDS:
+                    out.append((3, 0, ""))
+                else:
+                    out.append((4, 0, p))
+    out.append((1, 0, ""))
     return out
 
 def ver_cmp(a: str, b: str) -> int:
@@ -433,7 +458,7 @@ if subcmd == "check":
                         stderr=subprocess.DEVNULL, text=True, timeout=15
                     )
                     tags = [line.split("refs/tags/")[-1].strip() for line in out.splitlines() if "refs/tags/" in line]
-                    semver_tags = [t for t in tags if re.match(r'^v?\d+\.\d+', t)]
+                    semver_tags = [t for t in tags if re.match(r'^v?[0-9]+\.[0-9]+', t)]
                     use_tags = semver_tags or tags
                     if use_tags:
                         use_tags.sort(key=ver_parts)

@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,10 +23,24 @@ const lookupTimeout = 15 * time.Second
 
 var (
 	shaPinRe    = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
-	semverTagRe = regexp.MustCompile(`^v?\d+\.\d+`)
+	semverTagRe = regexp.MustCompile(`^v?[0-9]+\.[0-9]+`)
 	leadingVRe  = regexp.MustCompile(`^v`)
 	verSplitRe  = regexp.MustCompile(`[._-]+`)
+	verRunRe    = regexp.MustCompile(`[0-9]+|[^0-9]+`)
 )
+
+// Part classes, in sort order (the script's ver_parts uses the same numbers).
+const (
+	partPre   = 0 // pre-release word: dev < a < b < rc
+	partEnd   = 1 // end of the version
+	partNum   = 2 // number
+	partPost  = 3 // post-release word
+	partOther = 4 // any other word, above every number
+)
+
+var preRank = map[string]int{"dev": 0, "a": 1, "alpha": 1, "b": 2, "beta": 2, "c": 3, "rc": 3, "pre": 3, "preview": 3}
+
+var postWords = map[string]bool{"post": true, "rev": true, "r": true}
 
 // ResolveCurrent returns the current upstream version for a pin, or ""
 // when the lookup fails (mirroring the script's UNKNOWN path).
@@ -112,15 +125,20 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 }
 
 type verPart struct {
-	digit bool
-	n     int
-	s     string
+	class int
+	rank  int    // pre-release rank
+	num   string // digits without leading zeros
+	s     string // word
 }
 
 // VerCmp compares two version strings the way the script's ver_cmp does:
-// leading "v" stripped, split on [._-], numeric parts compared numerically,
-// numeric parts sort before non-numeric ones, and a shorter equal prefix
-// sorts first.
+// leading "v" stripped, split on [._-] and on digit/letter boundaries,
+// numbers compared numerically, a pre-release word (dev, a, b, rc) below the
+// release it precedes, a post-release word (post, rev, r) above it, any
+// other word above every number, and a shorter equal prefix first
+// (1.0.0rc1 < 1.0.0 < 1.0.0.post1; 1.2 < 1.2.0). Only the first word is a
+// pre/post marker; later words are identifiers inside it, so
+// alpha < alpha.1 < alpha.beta as SemVer requires.
 func VerCmp(a, b string) int {
 	pa := verParts(a)
 	pb := verParts(b)
@@ -129,26 +147,9 @@ func VerCmp(a, b string) int {
 		n = len(pb)
 	}
 	for i := 0; i < n; i++ {
-		x, y := pa[i], pb[i]
-		if x == y {
-			continue
+		if c := cmpPart(pa[i], pb[i]); c != 0 {
+			return c
 		}
-		if x.digit && y.digit {
-			if x.n < y.n {
-				return -1
-			}
-			return 1
-		}
-		if x.digit != y.digit {
-			if x.digit {
-				return -1
-			}
-			return 1
-		}
-		if x.s < y.s {
-			return -1
-		}
-		return 1
 	}
 	if len(pa) < len(pb) {
 		return -1
@@ -159,17 +160,65 @@ func VerCmp(a, b string) int {
 	return 0
 }
 
+func cmpPart(x, y verPart) int {
+	if x.class != y.class {
+		if x.class < y.class {
+			return -1
+		}
+		return 1
+	}
+	switch x.class {
+	case partPre:
+		return cmpInt(x.rank, y.rank)
+	case partNum:
+		if c := cmpInt(len(x.num), len(y.num)); c != 0 {
+			return c
+		}
+		return strings.Compare(x.num, y.num)
+	case partOther:
+		return strings.Compare(x.s, y.s)
+	}
+	return 0
+}
+
+func cmpInt(x, y int) int {
+	switch {
+	case x < y:
+		return -1
+	case x > y:
+		return 1
+	}
+	return 0
+}
+
 func verParts(v string) []verPart {
 	v = strings.ToLower(strings.TrimSpace(v))
 	v = strings.TrimPrefix(v, "v")
-	parts := verSplitRe.Split(v, -1)
-	out := make([]verPart, 0, len(parts))
-	for _, p := range parts {
-		if n, err := strconv.Atoi(p); err == nil && p != "" {
-			out = append(out, verPart{digit: true, n: n})
-		} else {
-			out = append(out, verPart{s: p})
+	var out []verPart
+	seenWord := false
+	for _, tok := range verSplitRe.Split(v, -1) {
+		if tok == "" {
+			out = append(out, verPart{class: partOther})
+			continue
+		}
+		for _, p := range verRunRe.FindAllString(tok, -1) {
+			if p[0] >= '0' && p[0] <= '9' {
+				out = append(out, verPart{class: partNum, num: strings.TrimLeft(p, "0")})
+				continue
+			}
+			if seenWord {
+				out = append(out, verPart{class: partOther, s: p})
+				continue
+			}
+			seenWord = true
+			if r, ok := preRank[p]; ok {
+				out = append(out, verPart{class: partPre, rank: r})
+			} else if postWords[p] {
+				out = append(out, verPart{class: partPost})
+			} else {
+				out = append(out, verPart{class: partOther, s: p})
+			}
 		}
 	}
-	return out
+	return append(out, verPart{class: partEnd})
 }

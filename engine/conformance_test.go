@@ -68,6 +68,31 @@ case "$url" in
     echo "1111111111111111111111111111111111111111 refs/tags/v1.0.0"
     echo "2222222222222222222222222222222222222222 refs/tags/v2.0.0"
     exit 0;;
+  *gh-pre*)
+    echo "3333333333333333333333333333333333333333 refs/tags/gateway-v0.3.1"
+    echo "4444444444444444444444444444444444444444 refs/tags/v0.3.4.post1"
+    echo "5555555555555555555555555555555555555555 refs/tags/v0.5.22"
+    echo "6666666666666666666666666666666666666666 refs/tags/v0.5.23"
+    echo "7777777777777777777777777777777777777777 refs/tags/v0.5.3rc2"
+    exit 0;;
+  *gh-rconly*)
+    echo "8888888888888888888888888888888888888888 refs/tags/v1.0.0rc1"
+    echo "9999999999999999999999999999999999999999 refs/tags/v1.0.0rc2"
+    echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/tags/v１.０.０"
+    exit 0;;
+  *gh-post*)
+    echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/v0.3.4"
+    echo "cccccccccccccccccccccccccccccccccccccccc refs/tags/v0.3.4.post1"
+    exit 0;;
+  *gh-final*)
+    echo "dddddddddddddddddddddddddddddddddddddddd refs/tags/v1.0.0"
+    echo "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee refs/tags/v1.0.0rc1"
+    echo "ffffffffffffffffffffffffffffffffffffffff refs/tags/v1.0.0rc2"
+    exit 0;;
+  *gh-semid*)
+    echo "1212121212121212121212121212121212121212 refs/tags/v1.0.0-alpha.1"
+    echo "3434343434343434343434343434343434343434 refs/tags/v1.0.0-alpha.beta"
+    exit 0;;
   *gh-unres*) exit 7;;
   *) exit 2;;
 esac
@@ -177,6 +202,22 @@ func conformanceCases() []conformanceCase {
 		// M-4: a GitHub tag pin (no sidecar) covers the tag-ordering
 		// comparison (git stub tags v1.0.0 and v2.0.0, pinned at 1.0.0).
 		{"github-tag-pin", "github-tag-pin", "STALE", true, "STALE    pin:gh-tags"},
+		// A pre-release tag (v0.5.3rc2) ranks below its own release, so it
+		// cannot beat v0.5.23; a pin on 0.5.23 is FRESH. The prefixed
+		// gateway-v0.3.1 tag is not a version tag and is ignored.
+		{"github-prerelease-tags", "github-prerelease-tags", "FRESH", false, "FRESH    pin:gh-pre  0.5.23"},
+		// With no final release, the newest pre-release is current. The
+		// full-width-digit tag v１.０.０ is not a version tag in either
+		// implementation.
+		{"github-only-prerelease", "github-only-prerelease", "STALE", true, "STALE    pin:gh-rconly  pinned 1.0.0rc1 → current 1.0.0rc2"},
+		// A post-release (v0.3.4.post1) is newer than its release.
+		{"github-post-release", "github-post-release", "STALE", true, "STALE    pin:gh-post  pinned 0.3.4 → current 0.3.4.post1"},
+		{"github-post-release-pinned", "github-post-release-pinned", "FRESH", false, "FRESH    pin:gh-post  0.3.4.post1"},
+		// A release candidate pin is older than the final release.
+		{"github-rc-to-final", "github-rc-to-final", "STALE", true, "STALE    pin:gh-final  pinned 1.0.0rc1 → current 1.0.0"},
+		// Inside a SemVer pre-release, later words are identifiers, not new
+		// markers: alpha.1 < alpha.beta.
+		{"github-semver-prerelease-ids", "github-semver-prerelease-ids", "STALE", true, "STALE    pin:gh-semid  pinned 1.0.0-alpha.1 → current 1.0.0-alpha.beta"},
 		{"unresolved-pin", "unresolved-pin", "FRESH", false, ""},
 		{"tampered", "tampered", "TAMPERED", true, ""},
 		{"unstamped", "unstamped", "TAMPERED", true, ""},
