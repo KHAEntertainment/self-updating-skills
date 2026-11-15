@@ -1,5 +1,7 @@
 # Architecture Decisions — Skill Engine
 
+> **Parked on 2026-11-13.** The project was re-scoped to the standalone utility (the meta-skill and `upkeep.sh`). Everything below records the engine as built through Phase 4a; it gets no new work, Phase 4b and Phase 5 were not built, and no published skill carries a sidecar. See `PROJECT_CONTEXT.md` for the current goal.
+
 Settled 2026-10-25. Tracking issue: #1. The full plan (data model, updater, engine, rollout) is the Traycer artifact `skill-engine-tech-plan` in epic `f16d590e-d4c2-48d1-be95-aec24a09cd90`; the phase Issues carry the parts each phase needs.
 
 ## Shape

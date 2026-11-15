@@ -39,12 +39,14 @@ func copyDir(t *testing.T, src, dst string) {
 	}
 }
 
-// retrofittedSkill returns a temp copy of the repo's retrofitted
-// claude-code-authoring skill plus its committed SKILL.md and sidecar bytes.
+// retrofittedSkill returns a temp copy of the retrofitted
+// claude-code-authoring fixture plus its committed SKILL.md and sidecar
+// bytes. The fixture is the skill as it stood with a sidecar; the published
+// skills/claude-code-authoring no longer carries one.
 func retrofittedSkill(t *testing.T) (dir, skillPath, sidecarPath string, wantSkill, wantSidecar []byte) {
 	t.Helper()
 	root := repoRoot(t)
-	src := filepath.Join(root, "skills", "claude-code-authoring")
+	src := filepath.Join(root, "testdata", "proof", "claude-code-authoring")
 	wantSkill, err := os.ReadFile(filepath.Join(src, "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +61,7 @@ func retrofittedSkill(t *testing.T) (dir, skillPath, sidecarPath string, wantSki
 }
 
 // AC1: the meta-skill retrofit flow plus `upkeep render` reproduces the
-// hand-retrofitted skills/claude-code-authoring file byte for byte.
+// hand-retrofitted testdata/proof/claude-code-authoring file byte for byte.
 func TestRenderRetrofitByteIdentical(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
