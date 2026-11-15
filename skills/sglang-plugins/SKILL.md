@@ -126,6 +126,13 @@ Verified 2026-11-14 against the pages named in each item.
 - **Attach and detach need an idle server and the admin key.** The calls fail with
   HTTP 400 while any request is running or queued, and with 403 when no admin key
   is configured; `--api-key` is not accepted (`hicache_storage_runtime_attach_detach`).
+- **The default L3 path does not survive a restart.** The `file` backend (and
+  `fast_file`, which shares its root) writes to `/tmp/hicache` by default, and a
+  reboot or tmp cleanup can wipe it. For any test whose cache has to survive a
+  restart, set a persistent path with `SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR`
+  (current docs also accept a `file_storage_path` extra-config key) and check the
+  path in the startup log (`hicache_best_practices`, "Deployment with Local
+  Filesystem Backends").
 
 ## Old habit → current path
 
