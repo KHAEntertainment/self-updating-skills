@@ -28,7 +28,7 @@
 ## Current Status
 
 - **Last updated**: 2026-11-13
-- **Current iteration goal**: the standalone utility — the `self-updating-skills` meta-skill and `upkeep.sh`. Next: a find, scan and convert workflow for a library of existing skills. Plan: Traycer artifact `utility-rescope-plan`.
+- **Current iteration goal**: the standalone utility — the `self-updating-skills` meta-skill and `upkeep.sh`. The find, scan and convert workflow for a library of existing skills is built (`scripts/scan.sh`, `references/convert-existing.md`). Next: a pilot conversion of three skills the owner approves. Plan: Traycer artifact `utility-rescope-plan`.
 - **Parked (2026-11-13)**: the Skill Engine (the Go code under `cmd/`, `engine/`, `internal/`, `testdata/`). It stays in the repo, unused, and gets no new work. Phase 4b and Phase 5 were not built; Issue #1 and the milestone "Skill Engine MVP" are closed as not planned. No published skill depends on the `upkeep` binary. Audit: Traycer artifact `project-audit-2026-11-13`.
 - **Open PRs**: none recorded here
 - **Known tech debt**: see the bottom of `docs/feature-log.md`
