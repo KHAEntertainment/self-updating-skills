@@ -133,16 +133,3 @@ Verified 2026-11-14 against the pages named in each item.
   (current docs also accept a `file_storage_path` extra-config key) and check the
   path in the startup log (`hicache_best_practices`, "Deployment with Local
   Filesystem Backends").
-
-## Old habit → current path
-
-Verified 2026-11-14 against the pages in the last column.
-
-| Old habit | Current path | Page |
-|---|---|---|
-| Edit SGLang's source to add a hook | A general plugin package with a `sglang.srt.plugins` entry point | `docs/hardware-platforms/plugin` |
-| Monkey-patch from your launch script | Register in the plugin's `register()`; it runs in every process, including scheduler subprocesses | `docs/hardware-platforms/plugin` |
-| Add a custom backend to SGLang's `BackendFactory` | `--hicache-storage-backend dynamic` with `module_path` and `class_name` in the extra config | `docs/advanced_features/hicache_best_practices` |
-| Use the `file` backend for a real NVMe tier | `fast_file` (same page format, parallel reads, LRU eviction); `file` is the minimal reference backend | `docs/advanced_features/hicache_best_practices` |
-| Raise `--hicache-size` to share cache between instances | Configure an L3 backend that every instance shares | `docs/advanced_features/hicache_design` |
-| Restart the server to change the storage backend | `PUT` / `DELETE /hicache/storage-backend` while the server is idle | `docs/advanced_features/hicache_storage_runtime_attach_detach` |
